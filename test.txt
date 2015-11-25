@@ -1,0 +1,25 @@
+extern char_to_number(char) : number
+extern number_to_char(number) : char
+
+func pow(n : number, e : number) : number
+{
+	var v : number = 1
+	while e > 0
+	{
+		v = v * n
+		e = e - 1
+	}
+	
+	return v
+}
+
+func string_to_number(str : string) : number
+{
+	var i : number = 0
+	var v : number = 0
+	var l : number = len str
+	
+	while 
+}
+
+write pow(10, 2)
