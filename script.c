@@ -1805,12 +1805,29 @@ static void resolve_type_tags(void* vexp)
 			if(exp->binx.op != TOK_ASSIGN)
 			{ 
 				if(!compare_type_tags(exp->binx.lhs->tag, exp->binx.rhs->tag) || exp->binx.lhs->tag->type != TAG_NUMBER)
-					error_e(exp->binx.lhs, "Invalid types in binary %s operation\n", g_token_names[exp->binx.op]);
+				{	
+					if(exp->binx.op != TOK_EQUALS)
+						error_e(exp->binx.lhs, "Invalid types in binary %s operation\n", g_token_names[exp->binx.op]);
+				}
 			}
 			else if(!are_assignment_types_valid(exp->binx.lhs, exp->binx.rhs))
 				error_e(exp->binx.lhs, "Type of lhs in assignment operation does not match the type of rhs\n");
 		
-			exp->tag = create_type_tag(TAG_NUMBER);
+			switch(exp->binx.op)
+			{
+				case TOK_PLUS:
+				case TOK_MINUS:
+				case TOK_MUL:
+				case TOK_DIV: exp->tag = create_type_tag(TAG_NUMBER); break;
+				
+				case TOK_LTE:
+				case TOK_GTE:
+				case TOK_LT:
+				case TOK_GT:
+				case TOK_EQUALS: exp->tag = create_type_tag(TAG_BOOL); break;
+				
+				default: exp->tag = create_type_tag(TAG_VOID); break;
+			}
 		} break;
 		
 		case EXP_CALL:
@@ -1898,6 +1915,10 @@ static void resolve_type_tags(void* vexp)
 		{
 			exp->tag = create_type_tag(TAG_VOID);
 			resolve_type_tags(exp->ifx.cond);
+			
+			if(exp->ifx.cond->tag->type != TAG_BOOL)
+				error_e(exp->ifx.cond, "Condition does not evaluate to a boolean value\n");
+			
 			resolve_type_tags(exp->ifx.body);
 			if(exp->ifx.alt)
 				resolve_type_tags(exp->ifx.alt);
@@ -1907,6 +1928,10 @@ static void resolve_type_tags(void* vexp)
 		{
 			exp->tag = create_type_tag(TAG_VOID);
 			resolve_type_tags(exp->whilex.cond);
+			
+			if(exp->whilex.cond->tag->type != TAG_BOOL) 
+				error_e(exp->whilex.cond, "Condition does not evaluate to a boolean value\n");
+			
 			resolve_type_tags(exp->whilex.body);
 		} break;
 		
@@ -2130,9 +2155,15 @@ static void compile_expr(script_t* script, expr_t* exp)
 			
 			compile_expr(script, exp->ifx.body);
 			
+			append_code(script, OP_GOTO);
+			int exitLoc = script->code.length;
+			append_int(script, 0);
+			
 			patch_int(script, loc, script->code.length);
 			if(exp->ifx.alt)
 				compile_expr(script, exp->ifx.alt);
+			
+			patch_int(script, exitLoc, script->code.length);
 		} break;
 		
 		case EXP_WHILE:

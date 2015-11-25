@@ -13,13 +13,66 @@ func pow(n : number, e : number) : number
 	return v
 }
 
+func is_digit(c : char) : bool
+{
+	var n : number = char_to_number(c)
+	
+	if n >= char_to_number('0')
+	{
+		if n <= char_to_number('9') 
+			return true
+	}
+	
+	return false
+}
+
+func bool_to_string(b : bool) : string
+{
+	if b return "true"
+	else return "false"
+}
+
 func string_to_number(str : string) : number
 {
 	var i : number = 0
 	var v : number = 0
 	var l : number = len str
+	var neg : bool = false
 	
-	while 
+	if l == 0 return 0
+	
+	if str[0] == '-'
+	{
+		neg = true
+		i = i + 1
+	}
+	
+	var mant : bool = false
+	var mant_pos : number = 0 - 1
+	
+	while i < l
+	{
+		var c : char = str[i]
+		
+		if c == '.'
+		{
+			mant = true	
+			mant_pos = i
+		}
+		else
+		{
+			var n : number = char_to_number(c) - char_to_number('0')
+
+			if mant v = v + (1 / pow(10, i - mant_pos)) * n
+			else v = v + pow(10, l - i - 1) * n
+		}
+		
+		i = i + 1
+	}
+	
+	if neg return 0 - v
+	else return v
 }
 
-write pow(10, 2)
+var b : bool = string_to_number("2147280390") == 2147280390
+write bool_to_string(b)
