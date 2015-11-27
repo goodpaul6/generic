@@ -1,6 +1,12 @@
 extern char_to_number(char) : number
 extern number_to_char(number) : char
 
+struct vec2
+{
+	x : number
+	
+}
+
 func pow(n : number, e : number) : number
 {
 	var v : number = 1
@@ -17,11 +23,8 @@ func is_digit(c : char) : bool
 {
 	var n : number = char_to_number(c)
 	
-	if n >= char_to_number('0')
-	{
-		if n <= char_to_number('9') 
-			return true
-	}
+	if n >= char_to_number('0') && n <= char_to_number('9') 
+		return true
 	
 	return false
 }
@@ -70,9 +73,8 @@ func string_to_number(str : string) : number
 		i = i + 1
 	}
 	
-	if neg return 0 - v
+	if neg return -v
 	else return v
 }
 
-var b : bool = string_to_number("2147280390") == 2147280390
-write bool_to_string(b)
+write string_to_number("-10000")

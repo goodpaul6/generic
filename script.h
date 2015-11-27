@@ -36,6 +36,12 @@ typedef enum script_op
 	OP_LTE,
 	OP_GTE,
 	
+	OP_LAND,
+	OP_LOR,
+	
+	OP_NEG,
+	OP_NOT,
+	
 	OP_EQU,
 	
 	OP_READ,
@@ -81,6 +87,13 @@ typedef struct script_function
 	char is_extern;
 	int index;
 } script_function_t;
+
+typedef struct script_struct
+{
+	// TODO: add some extra info for reflection-y stuff?
+	// member names, type names, etc?
+	vector_t members;
+} script_struct_t;
 
 typedef struct script_value
 {

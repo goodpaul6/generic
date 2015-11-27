@@ -108,6 +108,7 @@ enum
 	TOK_NUMBER,
 	TOK_STRING,
 	
+	TOK_NOT,
 	TOK_ASSIGN,
 	TOK_PLUS,
 	TOK_MINUS,
@@ -118,7 +119,11 @@ enum
 	TOK_LTE,
 	TOK_GTE,
 	
+	TOK_LAND,
+	TOK_LOR,
+	
 	TOK_EQUALS,
+	TOK_NOTEQUAL,
 	
 	TOK_EOF,
 	
@@ -138,6 +143,7 @@ typedef enum expr_type
 	EXP_LEN,
 	EXP_WRITE,
 	
+	EXP_UNARY,
 	EXP_BINARY,
 	
 	EXP_CALL,
@@ -189,6 +195,12 @@ typedef struct expr
 	
 		struct expr* write;
 		struct expr* len;
+		
+		struct
+		{
+			struct expr* rhs;
+			int op;
+		} unaryx;
 		
 		struct
 		{
@@ -275,6 +287,7 @@ static const char* g_token_names[NUM_TOKENS] = {
 	"number",
 	"string",
 	
+	"!",
 	"=",
 	"+",
 	"-",
@@ -285,7 +298,11 @@ static const char* g_token_names[NUM_TOKENS] = {
 	"<=",
 	">=",
 	
+	"&&",
+	"||",
+	
 	"==",
+	"!=",
 	
 	"eof"
 };
@@ -841,6 +858,29 @@ static int get_token()
 	int last_char = last;
 	last = get_char();
 	
+	if(last_char == '!')
+	{
+		if(last == '=')
+		{
+			last = get_char();
+			return TOK_NOTEQUAL;
+		}
+		
+		return TOK_NOT;
+	}
+	
+	if(last_char == '&' && last == '&')
+	{
+		last = get_char();
+		return TOK_LAND;
+	}
+	
+	if(last_char == '|' && last == '|')
+	{
+		last = get_char();
+		return TOK_LOR;
+	}
+	
 	if(last_char == ';') return TOK_SEMICOLON;
 	
 	if(last_char == '[') return TOK_OPENSQUARE;
@@ -1297,9 +1337,10 @@ static int get_prec(int op)
 	switch(op)
 	{
 		case TOK_ASSIGN: return 0;
-		case TOK_LT: case TOK_GT: case TOK_LTE: case TOK_GTE: case TOK_EQUALS: return 1;
-		case TOK_PLUS: case TOK_MINUS: return 2;
-		case TOK_MUL: case TOK_DIV: return 3;
+		case TOK_LAND: case TOK_LOR: return 1;
+		case TOK_LT: case TOK_GT: case TOK_LTE: case TOK_GTE: case TOK_EQUALS: return 2;
+		case TOK_PLUS: case TOK_MINUS: return 3;
+		case TOK_MUL: case TOK_DIV: return 4;
 	
 		default:
 			return -1;
@@ -1355,6 +1396,16 @@ static expr_t* parse_unary(script_t* script)
 {
 	switch(g_cur_tok)
 	{
+		case TOK_NOT: case TOK_MINUS:
+		{
+			expr_t* exp = create_expr(EXP_UNARY);
+			exp->unaryx.op = g_cur_tok;
+			get_next_token();
+			
+			exp->unaryx.rhs = parse_expr(script);
+			return parse_post(script, exp);
+		} break;
+		
 		default:
 			return parse_post(script, parse_factor(script));
 	}
@@ -1518,6 +1569,7 @@ static void debug_expr(script_t* script, expr_t* exp)
 		
 		case EXP_EXTERN: printf("extern %s", exp->extern_decl->name); break;
 		
+		case EXP_UNARY: printf("%s", g_token_names[exp->unaryx.op]); debug_expr(script, exp->unaryx.rhs); break;
 		case EXP_BINARY: printf("("); debug_expr(script, exp->binx.lhs); printf(" %s ", g_token_names[exp->binx.op]); debug_expr(script, exp->binx.rhs); printf(")"); break;
 		case EXP_WRITE: printf("write "); debug_expr(script, exp->write); break;
 		
@@ -1567,6 +1619,11 @@ static void delete_expr(expr_t* exp)
 		case EXP_LEN:
 		{
 			delete_expr(exp->len);
+		} break;
+		
+		case EXP_UNARY:
+		{
+			delete_expr(exp->unaryx.rhs);
 		} break;
 		
 		case EXP_BINARY:
@@ -1655,6 +1712,11 @@ static void resolve_symbols(expr_t* exp)
 				if(reference_function(exp->varx.name)) return;
 				error_e(exp, "Attempted to reference undeclared variable/function '%s'\n", exp->varx.name);
 			}
+		} break;
+		
+		case EXP_UNARY:
+		{
+			resolve_symbols(exp->unaryx.rhs);
 		} break;
 		
 		case EXP_BINARY:
@@ -1795,6 +1857,31 @@ static void resolve_type_tags(void* vexp)
 			resolve_type_tags(exp->write);
 		} break;
 		
+		case EXP_UNARY:
+		{
+			resolve_type_tags(exp->unaryx.rhs);
+			switch(exp->unaryx.op)
+			{
+				case TOK_NOT:
+				{
+					if(exp->unaryx.rhs->tag->type != TAG_BOOL)
+						error_e(exp->unaryx.rhs, "Attempted to use unary ! operator on non-boolean value\n");
+					exp->tag = create_type_tag(TAG_BOOL);
+				} break;
+				
+				case TOK_MINUS:
+				{
+					if(exp->unaryx.rhs->tag->type != TAG_NUMBER)
+						error_e(exp->unaryx.rhs, "Attempted to use unary - operator on non-numerical value\n");
+					exp->tag = create_type_tag(TAG_NUMBER);
+				} break;
+				
+				default:
+					error_exit_e(exp, "No type resolution for %s operator\n", g_token_names[exp->unaryx.op]);
+					break;
+			}
+		} break;
+		
 		case EXP_BINARY:
 		{
 			resolve_type_tags(exp->binx.lhs);
@@ -1806,7 +1893,7 @@ static void resolve_type_tags(void* vexp)
 			{ 
 				if(!compare_type_tags(exp->binx.lhs->tag, exp->binx.rhs->tag) || exp->binx.lhs->tag->type != TAG_NUMBER)
 				{	
-					if(exp->binx.op != TOK_EQUALS)
+					if(exp->binx.op != TOK_EQUALS && exp->binx.op != TOK_LAND && exp->binx.op != TOK_LOR)
 						error_e(exp->binx.lhs, "Invalid types in binary %s operation\n", g_token_names[exp->binx.op]);
 				}
 			}
@@ -1824,7 +1911,9 @@ static void resolve_type_tags(void* vexp)
 				case TOK_GTE:
 				case TOK_LT:
 				case TOK_GT:
-				case TOK_EQUALS: exp->tag = create_type_tag(TAG_BOOL); break;
+				case TOK_EQUALS: 
+				case TOK_LAND:
+				case TOK_LOR: exp->tag = create_type_tag(TAG_BOOL); break;
 				
 				default: exp->tag = create_type_tag(TAG_VOID); break;
 			}
@@ -2054,6 +2143,17 @@ static void compile_value_expr(script_t* script, expr_t* exp)
 			compile_value_expr(script, exp->paren);
 		} break;
 		
+		case EXP_UNARY:
+		{
+			compile_value_expr(script, exp->unaryx.rhs);
+			switch(exp->unaryx.op)
+			{
+				case TOK_MINUS: append_code(script, OP_NEG); break;
+				case TOK_NOT: append_code(script, OP_NOT); break;
+				// NOTE: perhaps error here
+			}
+		} break;
+		
 		case EXP_BINARY:
 		{
 			compile_value_expr(script, exp->binx.rhs);
@@ -2069,7 +2169,13 @@ static void compile_value_expr(script_t* script, expr_t* exp)
 				case TOK_GT: append_code(script, OP_GT); break;
 				case TOK_LTE: append_code(script, OP_LTE); break;
 				case TOK_GTE: append_code(script, OP_GTE); break;
+				
+				case TOK_LAND: append_code(script, OP_LAND); break;
+				case TOK_LOR: append_code(script, OP_LOR); break;
+				
 				case TOK_EQUALS: append_code(script, OP_EQU); break;
+				case TOK_NOTEQUAL: append_code(script, OP_EQU); append_code(script, OP_NOT); break;
+				
 				default: break;
 			}
 		} break;
@@ -2710,6 +2816,12 @@ static void disassemble(script_t* script, FILE* out)
 			case OP_LTE: fprintf(out, "lte\n"); break;
 			case OP_GTE: fprintf(out, "gte\n"); break;
 			
+			case OP_LAND: fprintf(out, "land\n"); break;
+			case OP_LOR: fprintf(out, "lor\n"); break;
+			
+			case OP_NEG: fprintf(out, "neg\n"); break;
+			case OP_NOT: fprintf(out, "not\n"); break;
+			
 			case OP_EQU: fprintf(out, "equ\n"); break;
 			
 			case OP_READ: fprintf(out, "read\n"); break;
@@ -2948,6 +3060,26 @@ static void execute_cycle(script_t* script)
 		
 		#undef BOP_TYPE
 		#undef BOP
+		
+		case OP_LAND:
+		{
+			script_push_bool(script, script_pop_bool(script) && script_pop_bool(script));
+		} break;
+		
+		case OP_LOR:
+		{
+			script_push_bool(script, script_pop_bool(script) || script_pop_bool(script));
+		} break;
+		
+		case OP_NEG:
+		{
+			script_push_number(script, -script_pop_number(script));
+		} break;
+		
+		case OP_NOT:
+		{
+			script_push_bool(script, !script_pop_bool(script));
+		} break;
 
 		// TODO: this should be specialized (OP_NUMBER_EQU, OP_STRING_EQU, OP_FUNC_EQU, OP_ARRAY_EQU)
 		case OP_EQU:
