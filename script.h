@@ -18,6 +18,7 @@ typedef enum script_op
 	OP_PUSH_ARRAY,
 	OP_PUSH_ARRAY_BLOCK,
 	OP_PUSH_RETVAL,
+	OP_PUSH_STRUCT,
 	
 	OP_STRING_LEN,
 	OP_ARRAY_LEN,
@@ -26,6 +27,9 @@ typedef enum script_op
 	
 	OP_ARRAY_GET,
 	OP_ARRAY_SET,
+	
+	OP_STRUCT_GET,
+	OP_STRUCT_SET,
 	
 	OP_ADD,
 	OP_SUB,
@@ -73,6 +77,7 @@ typedef enum script_value_type
 	VAL_STRING,
 	VAL_FUNC,
 	VAL_ARRAY,
+	VAL_STRUCT_INSTANCE,
 	NUM_VALUE_TYPES
 } script_value_type_t;
 
@@ -109,6 +114,7 @@ typedef struct script_value
 		script_string_t string;
 		script_function_t function;
 		vector_t array;
+		script_struct_t ds;
 	};
 } script_value_t;
 
