@@ -1,16 +1,6 @@
 extern char_to_number(char) : number
 extern number_to_char(number) : char
 
-var x : vec2
-var y : vec2
-var z : vec2
-
-struct vec2
-{
-	x : number
-	y : number
-}
-
 func pow(n : number, e : number) : number
 {
 	var v : number = 1
@@ -84,13 +74,3 @@ func string_to_number(str : string) : number
 	else return v
 }
 
-func vec2(x : number, y : number) : vec2
-{
-	var v : vec2 = new vec2
-	v.x = x
-	v.y = y
-	
-	return v
-}
-
-write string_to_number("-1000")

@@ -13,6 +13,7 @@ typedef struct
 } vector_t;
 
 typedef void (*vector_traverse_t)(void* value);
+typedef int (*vector_compare_t)(const void* data, const void* a, const void* b);
 
 void vec_init(vector_t* vector, size_t datum_size);
 
@@ -31,6 +32,7 @@ void vec_insert(vector_t* vector, void* pvalue, size_t index);
 void vec_remove(vector_t* vector, size_t index);
 void* vec_back(vector_t* vector);
 
+void vec_sort(vector_t* vector, vector_compare_t compare);
 void vec_traverse(vector_t* vector, vector_traverse_t traverse);
 
 void vec_clear(vector_t* vector);

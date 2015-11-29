@@ -211,7 +211,7 @@ typedef struct expr
 		{
 			type_tag_t* type;
 			vector_t init;			// contains expr_t*
-		} createx;
+		} newx;
 		
 		char boolean_value;
 		char code;
@@ -458,6 +458,12 @@ static void error_exit_e(expr_t* exp, const char* fmt, ...)
 
 static void write_value(script_value_t* val)
 {
+	if(!val)
+	{
+		printf("null");
+		return;
+	}
+	
 	switch(val->type)
 	{
 		case VAL_NULL: printf("null"); break;
@@ -1608,8 +1614,26 @@ static expr_t* parse_unary(script_t* script)
 				if(tag->type == TAG_STRUCT)
 				{
 					exp = create_expr(EXP_STRUCT_NEW);
-					exp->struct_tag = tag;
+					
+					exp->newx.type = tag;
+					vec_init(&exp->newx.init, sizeof(expr_t*));
+					
 					get_next_token();
+					
+					if(g_cur_tok == TOK_OPENCURLY)
+					{
+						get_next_token();
+						while(g_cur_tok != TOK_CLOSECURLY)
+						{
+							expr_t* e = parse_expr(script);
+							if(e->type != EXP_BINARY || e->binx.lhs->type != EXP_VAR || e->binx.op != TOK_ASSIGN)
+								error_exit_p("Invalid initializer expression for %s\n", tag->ds.name);
+							
+							vec_push_back(&exp->newx.init, &e);
+							if(g_cur_tok == TOK_COMMA) get_next_token();
+						}
+						get_next_token();
+					}
 					
 					return exp;
 				}
@@ -1703,7 +1727,7 @@ static void debug_expr(script_t* script, expr_t* exp)
 		
 		case EXP_STRUCT_NEW:
 		{
-			printf("new %s", exp->struct_tag->ds.name);
+			printf("new %s", exp->newx.type->ds.name);
 		} break;
 		
 		case EXP_DOT:
@@ -1838,8 +1862,14 @@ static void delete_expr(expr_t* exp)
 			free(exp->dotx.name);
 		} break;
 		
-		case EXP_STRUCT_DECL:
 		case EXP_STRUCT_NEW:
+		{
+			for(int i = 0; i < exp->newx.init.length; ++i)
+				delete_expr(vec_get_value(&exp->newx.init, i, expr_t*));
+			vec_destroy(&exp->newx.init);
+		} break;
+		
+		case EXP_STRUCT_DECL:
 		case EXP_EXTERN:
 		case EXP_BOOL:
 		case EXP_CHAR:
@@ -1956,8 +1986,13 @@ static void resolve_symbols(expr_t* exp)
 			resolve_symbols(exp->dotx.value);
 		} break;
 		
-		case EXP_STRUCT_DECL:
 		case EXP_STRUCT_NEW:
+		{
+			for(int i = 0; i < exp->newx.init.length; ++i)
+				resolve_symbols(vec_get_value(&exp->newx.init, i, expr_t*));
+		} break;
+		
+		case EXP_STRUCT_DECL:
 		case EXP_EXTERN:
 		case EXP_NUMBER:
 		case EXP_STRING:
@@ -2114,7 +2149,7 @@ static void resolve_type_tags(void* vexp)
 		
 		case EXP_STRUCT_NEW:
 		{
-			exp->tag = exp->struct_tag;
+			exp->tag = exp->newx.type;
 		} break;
 			
 		case EXP_NUMBER:
@@ -2376,8 +2411,23 @@ static void compile_value_expr(script_t* script, expr_t* exp)
 	{
 		case EXP_STRUCT_NEW:
 		{
+			for(int i = exp->newx.init.length - 1; i >= 0; --i)
+			{
+				expr_t* init = vec_get_value(&exp->newx.init, i, expr_t*);
+				int index = get_struct_type_member_index(exp->newx.type, init->binx.lhs->varx.name);
+				
+				if(index < 0) error_exit_e(init, "Attempted to initialize non-existent member '%s' in struct %s instantiation\n", 
+							  init->binx.lhs->varx.name, exp->newx.type->ds.name);
+				
+				append_code(script, OP_PUSH_NUMBER);
+				append_int(script, register_number(script, index));
+				
+				compile_value_expr(script, init->binx.rhs);
+			}
+			
 			append_code(script, OP_PUSH_STRUCT);
-			append_int(script, exp->struct_tag->ds.members.length);
+			append_int(script, exp->newx.type->ds.members.length);
+			append_int(script, exp->newx.init.length);
 		} break;
 		
 		case EXP_DOT:
@@ -3018,15 +3068,10 @@ void script_return_top(script_t* script)
 	script->ret_val = pop_value(script);
 }
 
-static void push_struct(script_t* script, int length)
+static void push_struct(script_t* script, vector_t members)
 {
 	script_value_t* val = new_value(script, VAL_STRUCT_INSTANCE);
-	
-	vec_init(&val->ds.members, sizeof(script_value_t*));
-	vec_resize(&val->ds.members, length, NULL);
-
-	memset(val->ds.members.data, 0, val->ds.members.length * val->ds.members.datum_size);
-	
+	val->ds.members = members;
 	push_value(script, val);
 }
 
@@ -3146,8 +3191,12 @@ static void disassemble(script_t* script, FILE* out)
 			case OP_PUSH_STRUCT:
 			{
 				int nmem = read_int_at(script, pc);
-				fprintf(out, "push_struct num_members=%d\n", nmem);
 				pc += sizeof(int) / sizeof(word);
+				
+				int ninit = read_int_at(script, pc);
+				pc += sizeof(int) / sizeof(word);
+				
+				fprintf(out, "push_struct num_members=%d num_init=%d\n", nmem, ninit);
 			} break;
 			
 			case OP_STRING_LEN:
@@ -3400,7 +3449,26 @@ static void execute_cycle(script_t* script)
 		case OP_PUSH_STRUCT:
 		{
 			int length = read_int(script);
-			push_struct(script, length);
+			int n_init = read_int(script);
+			
+			vector_t members;
+			vec_init(&members, sizeof(script_value_t*));
+			
+			// initialize all members to null
+			script_value_t* init_value = NULL;
+			vec_resize(&members, length, &init_value);
+			
+			for(int i = 0; i < n_init; ++i)
+			{
+				script_value_t* val = pop_value(script);
+				int index = (int)script_pop_number(script);
+				
+				vec_set(&members, index, &val);
+			}
+			
+			// NOTE: not destroying members because 
+			// the data should not be destroyed
+			push_struct(script, members);
 		} break;
 		
 		case OP_STRING_LEN:

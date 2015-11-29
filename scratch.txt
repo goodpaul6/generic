@@ -1,0 +1,5 @@
+TODO:
+- Initialize all members of arrays and structs to a GLOBAL null singleton
+
+IDEAS:
+- Compile-time syntactic macros

@@ -150,6 +150,11 @@ void* vec_back(vector_t* vector)
 	return &vector->data[(vector->length - 1) * vector->datum_size];
 }
 
+void vec_sort(vector_t* vector, vector_compare_t compare)
+{
+	qsort(vector->data, vector->length, vector->datum_size, (int(*)(const void*, const void*))compare);
+}
+
 void vec_traverse(vector_t* vector, vector_traverse_t traverse)
 {
 	for(int i = 0; i < vector->length; ++i)
