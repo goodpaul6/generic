@@ -1,76 +1,55 @@
-extern char_to_number(char) : number
+extern truncate(number) : number
 extern number_to_char(number) : char
+extern number_to_string(number) : string
+extern print_char(char) : void
 
-func pow(n : number, e : number) : number
-{
-	var v : number = 1
-	while e > 0
-	{
-		v = v * n
-		e = e - 1
-	}
-	
-	return v
-}
-
-func is_digit(c : char) : bool
-{
-	var n : number = char_to_number(c)
-	
-	if n >= char_to_number('0') && n <= char_to_number('9') 
-		return true
-	
-	return false
-}
-
-func bool_to_string(b : bool) : string
-{
-	if b return "true"
-	else return "false"
-}
-
-func string_to_number(str : string) : number
+func prints(s : string) : void
 {
 	var i : number = 0
-	var v : number = 0
-	var l : number = len str
-	var neg : bool = false
-	
-	if l == 0 return 0
-	
-	if str[0] == '-'
-	{
-		neg = true
-		i = i + 1
-	}
-	
-	var mant : bool = false
-	var mant_pos : number = 0 - 1
+	var l : number = len s
 	
 	while i < l
 	{
-		var c : char = str[i]
-		
-		if c == '.'
-		{
-			if mant
-				return v
-		
-			mant = true
-			mant_pos = i
-		}
-		else
-		{
-			var n : number = char_to_number(c) - char_to_number('0')
-			
-			if mant v = v + (1 / pow(10, i - mant_pos)) * n
-			else v = v + pow(10, l - i - 1) * n
-		}
-		
+		print_char(s[i])
 		i = i + 1
 	}
+}
+
+func printf(s : string, args : array-dynamic) : void
+{
+	var i : number = 0
 	
-	if neg return -v
-	else return v
+	var arg_index : number = 0
+	var length : number = len s
+	
+	while i < length
+	{
+		var c : char = s[i]
+		
+		if c == '%'
+		{
+			i = i + 1
+			c = s[i]
+			
+			if c == 'g'
+				prints(number_to_string(args[arg_index]))
+			else if c == 'i'
+				prints(number_to_string(truncate(args[arg_index])))
+			else if c == 's'
+				prints(args[arg_index])
+			else if c == 'b'
+			{
+				if args[arg_index] prints("true")
+				else prints("false")
+			}
+			else if c == 'c'
+				print_char(args[arg_index])
+				
+			arg_index = arg_index + 1
+		}
+		else
+			print_char(c)
+		i = i + 1
+	}
 }
 

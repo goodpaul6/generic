@@ -1,5 +1,30 @@
 TODO:
-- Initialize all members of arrays and structs to a GLOBAL null singleton
+- Initialize all members of arrays and structs to a GLOBAL null singleton on creation
+- Type-safe container operations (i.e no dynamic):
+	- generics:
+		example: func array_push<T, V>(array : T, value : V) 
+	- macros:
+		example: 
+		func array_push(array : expr, value : expr)
+		{
+			if array.tag.type != tag.array	
+				error_e(array, "Attempted to call array_push on non-array value type\n")
+			
+			if !compare_types(array.tag.contained, value.tag)
+				error_e(...)
+		
+			return new call_expr {
+				func = new var_expr {
+					name = "array_push_dynamic",
+					
+				}
+				
+				args = [value],
+			}
+		}
+		
 
 IDEAS:
+- Stack allocated numbers (like a little heap for numbers which grows and shrinks with the stack frames)
+- Copy value operations? (like copy(x, 10) or whatever)
 - Compile-time syntactic macros

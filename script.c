@@ -22,6 +22,7 @@ typedef struct
 typedef enum
 {
 	TAG_VOID,
+	TAG_DYNAMIC,
 	TAG_BOOL,
 	TAG_CHAR,
 	TAG_NUMBER,
@@ -82,6 +83,7 @@ typedef struct func_decl
 	vector_t args;
 	
 	int index;
+	char has_return;
 } func_decl_t;
 
 typedef struct
@@ -362,6 +364,7 @@ static const char* g_value_types[NUM_VALUE_TYPES] = {
 
 static const char* g_builtin_type_tags[NUM_BUILTIN_TAGS] = {
 	"void",
+	"dynamic",
 	"bool",
 	"char",
 	"number",
@@ -590,6 +593,7 @@ static type_tag_t* get_type_tag_from_name(const char* name)
 	
 	type_tag_t* potential_tag = create_type_tag(TAG_STRUCT);
 	potential_tag->ds.name = estrdup(name);
+	vec_init(&potential_tag->ds.members, sizeof(type_tag_member_t));
 	potential_tag->defined = 0;
 	
 	map_set(&g_user_type_tags, name, potential_tag);
@@ -597,8 +601,19 @@ static type_tag_t* get_type_tag_from_name(const char* name)
 	return potential_tag;
 }
 
+static char is_type_tag(type_tag_t* tag, tag_t type)
+{
+	return tag->type == type || (tag->type != TAG_VOID && tag->type == TAG_DYNAMIC);
+}
+
 static char compare_type_tags(type_tag_t* a, type_tag_t* b)
 {
+	if(a->type != TAG_VOID && b->type != TAG_VOID)
+	{
+		if(a->type == TAG_DYNAMIC || b->type == TAG_DYNAMIC)
+			return 1;
+	}
+	
 	if(a->type != b->type) return 0;
 	
 	switch(a->type)
@@ -647,16 +662,16 @@ static void destroy_type_tag(void* vtag)
 	{
 		case TAG_FUNC:
 		{
-			for(int i = 0; i < tag->func.arg_types.length; ++i)
-				destroy_type_tag(vec_get_value(&tag->func.arg_types, i, type_tag_t*));
+			/*for(int i = 0; i < tag->func.arg_types.length; ++i)
+				destroy_type_tag(vec_get_value(&tag->func.arg_types, i, type_tag_t*));*/
 			
 			vec_destroy(&tag->func.arg_types);
-			destroy_type_tag(&tag->func.return_type);
+			// destroy_type_tag(tag->func.return_type);
 		} break;
 		
 		case TAG_ARRAY:
 		{
-			destroy_type_tag(tag->contained);
+			// destroy_type_tag(tag->contained);
 		} break;
 		
 		case TAG_STRUCT:
@@ -667,7 +682,7 @@ static void destroy_type_tag(void* vtag)
 			{
 				type_tag_member_t* mem = vec_get(&tag->ds.members, i);
 				free(mem->name);
-				destroy_type_tag(mem->type);
+				//destroy_type_tag(mem->type);
 			}
 				
 			vec_destroy(&tag->ds.members);
@@ -845,6 +860,7 @@ static func_decl_t* declare_function(const char* name)
 	vec_init(&decl->args, sizeof(var_decl_t*));
 
 	decl->index = g_num_functions++;
+	decl->has_return = 0;
 
 	vec_push_back(&g_functions, &decl);
 	return decl;
@@ -1340,6 +1356,8 @@ static expr_t* parse_return(script_t* script)
 	expr_t* exp = create_expr(EXP_RETURN);
 	exp->retx.parent = g_cur_func;
 	
+	g_cur_func->has_return = 1;
+	
 	if(get_next_token() != TOK_SEMICOLON)
 		exp->retx.value = parse_expr(script);
 	else
@@ -1453,6 +1471,13 @@ static expr_t* parse_func(script_t* script)
 	
 	exp->funcx.body = parse_expr(script);
 	exit_function();
+	
+	if(exp->funcx.decl->tag->func.return_type->type != TAG_VOID && !exp->funcx.decl->has_return)
+		error_exit_p("Non-void function missing return statement in body\n");
+		
+	// TODO: Check if the body has a top-level return statement
+	// in order to assure that non-void functions ALWAYS return a value
+	// (I mean, they'll return null when you don't so idk really)
 	
 	free(name);
 
@@ -2090,6 +2115,8 @@ static void resolve_symbols(expr_t* exp)
 
 static char are_assignment_types_valid(expr_t* lhs, expr_t* rhs)
 {
+	return compare_type_tags(lhs->tag, rhs->tag);
+	/*
 	switch(lhs->type)
 	{
 		case EXP_VAR:
@@ -2105,7 +2132,7 @@ static char are_assignment_types_valid(expr_t* lhs, expr_t* rhs)
 		default: break;
 	}
 	
-	return 1;
+	return 1;*/
 }
 
 // TODO: Add type names to error messages
@@ -2257,13 +2284,20 @@ static void resolve_type_tags(void* vexp)
 			resolve_type_tags(exp->callx.func);
 			if(exp->callx.func->tag->type != TAG_FUNC)
 				error_defer_e(exp, "Attempting to call something that is not a function\n");
-			for(int i = 0; i < exp->callx.args.length; ++i)
-			{
-				expr_t* arg = vec_get_value(&exp->callx.args, i, expr_t*);
-				resolve_type_tags(arg);
 			
-				type_tag_t* expected_tag = vec_get_value(&exp->callx.func->tag->func.arg_types, i, type_tag_t*);
-				if(!compare_type_tags(arg->tag, expected_tag)) error_defer_e(arg, "Type of argument %i does not match expected type\n", i + 1);
+			if(exp->callx.args.length != exp->callx.func->tag->func.arg_types.length)
+				error_defer_e(exp, "Passed %d argument(s) into function expecting %d argument(s)\n", 
+				exp->callx.args.length, exp->callx.func->tag->func.arg_types.length);
+			else
+			{
+				for(int i = 0; i < exp->callx.args.length; ++i)
+				{
+					expr_t* arg = vec_get_value(&exp->callx.args, i, expr_t*);
+					resolve_type_tags(arg);
+				
+					type_tag_t* expected_tag = vec_get_value(&exp->callx.func->tag->func.arg_types, i, type_tag_t*);
+					if(!compare_type_tags(arg->tag, expected_tag)) error_defer_e(arg, "Type of argument %i does not match expected type\n", i + 1);
+				}
 			}
 			
 			exp->tag = exp->callx.func->tag->func.return_type;
@@ -2290,7 +2324,7 @@ static void resolve_type_tags(void* vexp)
 			resolve_type_tags(exp->array_index.array);
 			resolve_type_tags(exp->array_index.index);
 			
-			if(exp->array_index.index->tag->type != TAG_NUMBER)
+			if(!is_type_tag(exp->array_index.index->tag, TAG_NUMBER))
 				error_defer_e(exp->array_index.index, "Attempting to index array with non-number value\n");
 			
 			switch(exp->array_index.array->tag->type)
@@ -2320,7 +2354,9 @@ static void resolve_type_tags(void* vexp)
 				for(int i = 1; i < exp->array_literal.values.length; ++i)
 				{
 					expr_t* e = vec_get_value(&exp->array_literal.values, i, expr_t*);
-					if(!compare_type_tags(e->tag, tag->contained)) error_defer_e(e, "Array literal value type does not match the array's contained type\n");
+					if(!compare_type_tags(e->tag, tag->contained))
+						tag = create_type_tag(TAG_DYNAMIC);			// okay, so it must be a dynamic literal
+					// error_defer_e(e, "Array literal value type does not match the array's contained type\n");
 				}
 			}
 			
@@ -2331,6 +2367,9 @@ static void resolve_type_tags(void* vexp)
 		{
 			exp->tag = create_type_tag(TAG_NUMBER);
 			resolve_type_tags(exp->len);
+			
+			if(exp->len->tag->type != TAG_STRING && exp->len->tag->type != TAG_ARRAY)
+				error_defer_e(exp->len, "Attempted to find the length of non-measurable type\n");
 		} break;
 		
 		case EXP_IF:
@@ -2338,7 +2377,7 @@ static void resolve_type_tags(void* vexp)
 			exp->tag = create_type_tag(TAG_VOID);
 			resolve_type_tags(exp->ifx.cond);
 			
-			if(exp->ifx.cond->tag->type != TAG_BOOL)
+			if(!is_type_tag(exp->ifx.cond->tag, TAG_BOOL))
 				error_defer_e(exp->ifx.cond, "Condition does not evaluate to a boolean value\n");
 			
 			resolve_type_tags(exp->ifx.body);
@@ -2351,7 +2390,7 @@ static void resolve_type_tags(void* vexp)
 			exp->tag = create_type_tag(TAG_VOID);
 			resolve_type_tags(exp->whilex.cond);
 			
-			if(exp->whilex.cond->tag->type != TAG_BOOL) 
+			if(!is_type_tag(exp->whilex.cond->tag, TAG_BOOL)) 
 				error_defer_e(exp->whilex.cond, "Condition does not evaluate to a boolean value\n");
 			
 			resolve_type_tags(exp->whilex.body);
@@ -2737,6 +2776,20 @@ void script_bind_extern(script_t* script, const char* name, script_extern_t ext)
 
 // DEFAULT EXTERNS
 
+static void ext_make_array_of_length(script_t* script, vector_t* args)
+{
+	script_value_t* val = vec_get_value(args, 0, script_value_t*);
+	int length = (int)val->number;
+	
+	vector_t array;
+	vec_init(&array, sizeof(script_value_t*));
+	script_value_t* null_value = NULL;
+	vec_resize(&array, length, &null_value);
+	
+	script_push_premade_array(script, array);
+	script_return_top(script);
+}
+
 static void ext_char_to_number(script_t* script, vector_t* args)
 {
 	script_value_t* val = vec_get_value(args, 0, script_value_t*);
@@ -2751,12 +2804,49 @@ static void ext_number_to_char(script_t* script, vector_t* args)
 	script_return_top(script);
 }
 
+static void ext_number_to_string(script_t* script, vector_t* args)
+{
+	script_value_t* val = vec_get_value(args, 0, script_value_t*);
+	static char buf[256]; // TODO: don't use a magic number here
+	sprintf(buf, "%g", val->number);
+	script_push_cstr(script, buf);
+	script_return_top(script);
+}
+
+static void ext_string_to_number(script_t* script, vector_t* args)
+{
+	script_value_t* val = vec_get_value(args, 0, script_value_t*);
+	script_push_number(script, strtod(val->string.data, NULL));
+	script_return_top(script);
+}
+
+static void ext_print_char(script_t* script, vector_t* args)
+{
+	script_value_t* val = vec_get_value(args, 0, script_value_t*);
+	putchar(val->code);
+}
+
+static void ext_truncate(script_t* script, vector_t* args)
+{
+	script_value_t* val = vec_get_value(args, 0, script_value_t*);
+	script_push_number(script, (int)val->number);
+	script_return_top(script);
+}
+
 // END OF DEFAULT EXTERNS
 
 static void bind_default_externs(script_t* script)
 {
+	script_bind_extern(script, "make_array_of_length", ext_make_array_of_length);
+	
 	script_bind_extern(script, "char_to_number", ext_char_to_number);
 	script_bind_extern(script, "number_to_char", ext_number_to_char);
+	script_bind_extern(script, "number_to_string", ext_number_to_string);
+	script_bind_extern(script, "string_to_number", ext_string_to_number);
+	
+	script_bind_extern(script, "print_char", ext_print_char);
+	
+	script_bind_extern(script, "truncate", ext_truncate);
 }
 
 void script_init(script_t* script)
@@ -2797,10 +2887,20 @@ void script_init(script_t* script)
 	bind_default_externs(script);
 }
 
-static void destroy_value(script_value_t* val)
+static void delete_value(script_value_t* val)
 {
-	if(val->type == VAL_STRING)
-		free(val->string.data);
+	switch(val->type)
+	{
+		case VAL_NULL:
+		case VAL_BOOL:
+		case VAL_CHAR:
+		case VAL_NUMBER:
+		case VAL_FUNC: break;
+		
+		case VAL_STRING: free(val->string.data); break;
+		case VAL_ARRAY: vec_destroy(&val->array); break;
+		case VAL_STRUCT_INSTANCE: vec_destroy(&val->ds.members); break;
+	}
 	
 	free(val);
 }
@@ -2810,7 +2910,7 @@ static void destroy_all_values(script_t* script)
 	while(script->gc_head)
 	{
 		script_value_t* next = script->gc_head->next;
-		destroy_value(script->gc_head);
+		delete_value(script->gc_head);
 		script->gc_head = next;
 	}
 }
@@ -2859,7 +2959,18 @@ static void mark(script_value_t* value)
 	if(value->type == VAL_ARRAY)
 	{
 		for(int i = 0; i < value->array.length; ++i)
-			mark(vec_get_value(&value->array, i, script_value_t*));
+		{	
+			script_value_t* v = vec_get_value(&value->array, i, script_value_t*); 
+			if(v) mark(v);
+		}
+	}
+	else if(value->type == VAL_STRUCT_INSTANCE)
+	{
+		for(int i = 0; i < value->ds.members.length; ++i)
+		{
+			script_value_t* v = vec_get_value(&value->ds.members, i, script_value_t*); 
+			if(v) mark(v);
+		}
 	}
 }
 
@@ -2890,7 +3001,7 @@ static void sweep(script_t* script)
 			script_value_t* unreached = *val;
 			*val = unreached->next;
 			--script->num_objects;
-			destroy_value(unreached);
+			delete_value(unreached);
 		}
 		else
 		{

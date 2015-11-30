@@ -78,6 +78,7 @@ typedef enum script_value_type
 	VAL_FUNC,
 	VAL_ARRAY,
 	VAL_STRUCT_INSTANCE,
+	VAL_NATIVE,
 	NUM_VALUE_TYPES
 } script_value_type_t;
 
@@ -100,6 +101,15 @@ typedef struct script_struct
 	vector_t members;
 } script_struct_t;
 
+typedef void (*script_native_callback_t)(void*);
+
+typedef struct script_native
+{
+	void* value;
+	script_native_callback_t on_mark;
+	script_native_callback_t on_delete;
+} script_native_t;
+
 typedef struct script_value
 {
 	script_value_type_t type;
@@ -115,6 +125,7 @@ typedef struct script_value
 		script_function_t function;
 		vector_t array;
 		script_struct_t ds;
+		script_native_t nat;
 	};
 } script_value_t;
 
