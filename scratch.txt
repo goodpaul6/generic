@@ -1,4 +1,6 @@
 TODO:
+- Struct default values
+- Store a free-list of unused values for later use
 - Initialize all members of arrays and structs to a GLOBAL null singleton on creation
 - Type-safe container operations (i.e no dynamic):
 	- generics:
@@ -16,13 +18,14 @@ TODO:
 			return new call_expr {
 				func = new var_expr {
 					name = "array_push_dynamic",
-					
 				}
-				
 				args = [value],
 			}
 		}
 		
+ISSUES:
+- script_pop_array returns a vector_t* which would be invalid after the object is freed 
+  (using that vector_t* after that the gc would cause UB)
 
 IDEAS:
 - Stack allocated numbers (like a little heap for numbers which grows and shrinks with the stack frames)

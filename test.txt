@@ -1,55 +1,23 @@
-extern truncate(number) : number
-extern number_to_char(number) : char
-extern number_to_string(number) : string
-extern print_char(char) : void
-
-func prints(s : string) : void
+struct vec2
 {
-	var i : number = 0
-	var l : number = len s
+	x : number
+	y : number
 	
-	while i < l
+	set(x : number, y : number) : void
 	{
-		print_char(s[i])
-		i = i + 1
+		self.x = x
+		self.y = y
+	}
+	
+	to_array() : array-number
+	{
+		return [self.x, self.y]
 	}
 }
 
-func printf(s : string, args : array-dynamic) : void
-{
-	var i : number = 0
-	
-	var arg_index : number = 0
-	var length : number = len s
-	
-	while i < length
-	{
-		var c : char = s[i]
-		
-		if c == '%'
-		{
-			i = i + 1
-			c = s[i]
-			
-			if c == 'g'
-				prints(number_to_string(args[arg_index]))
-			else if c == 'i'
-				prints(number_to_string(truncate(args[arg_index])))
-			else if c == 's'
-				prints(args[arg_index])
-			else if c == 'b'
-			{
-				if args[arg_index] prints("true")
-				else prints("false")
-			}
-			else if c == 'c'
-				print_char(args[arg_index])
-				
-			arg_index = arg_index + 1
-		}
-		else
-			print_char(c)
-		i = i + 1
-	}
+var v : vec2 = new vec2 {
+	x = 10,
+	y = 20
 }
 
+v:set(100, 200)

@@ -150,6 +150,22 @@ void* vec_back(vector_t* vector)
 	return &vector->data[(vector->length - 1) * vector->datum_size];
 }
 
+void vec_flip(vector_t* vector)
+{
+	if(vector->length == 0) return;
+	
+	unsigned char* lo = vector->data;
+	unsigned char* hi = &vector->data[vector->length - 1];
+	unsigned char swap;
+	
+	while(lo < hi)
+	{
+		swap = *lo;
+		*lo++ = *hi;
+		*hi-- = swap;
+	}
+}
+
 void vec_sort(vector_t* vector, vector_compare_t compare)
 {
 	qsort(vector->data, vector->length, vector->datum_size, (int(*)(const void*, const void*))compare);

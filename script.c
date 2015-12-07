@@ -6,6 +6,7 @@
 #include <ctype.h>
 #include <stdarg.h>
 #include <string.h>
+#include <stdint.h>
 
 #define MAX_LEX_CHARS 256
 #define STACK_SIZE 256
@@ -29,6 +30,7 @@ typedef enum
 	TAG_STRING,
 	TAG_FUNC,
 	TAG_ARRAY,
+	TAG_NATIVE,
 	NUM_BUILTIN_TAGS,
 	
 	TAG_STRUCT
@@ -54,7 +56,8 @@ typedef struct type_tag
 		{
 			char* name;
 			vector_t members;
-		} ds; 
+			vector_t functions;
+		} ds;
 	};
 } type_tag_t;
 
@@ -100,6 +103,8 @@ typedef struct
 
 enum
 {
+	TOK_NULL,
+	
 	TOK_NEW,
 	TOK_STRUCT,
 	TOK_EXTERN,
@@ -160,8 +165,12 @@ enum
 
 typedef enum expr_type
 {	
+	EXP_NULL,
+	
 	EXP_STRUCT_DECL,
 	EXP_STRUCT_NEW,
+	
+	EXP_COLON,
 	EXP_DOT,
 	
 	EXP_VAR,
@@ -195,12 +204,15 @@ typedef enum expr_type
 
 typedef struct expr
 {
+	// NOTE: Tells delete_expr not to delete any expressions this expression references (cause it's a shallow copy) 
+	char is_shallow_copy;
 	context_t ctx;
 	expr_type_t type;
 	type_tag_t* tag;
 		
 	union
 	{
+		// NOTE: EXP_COLON uses dotx	
 		struct
 		{
 			struct expr* value;
@@ -293,7 +305,16 @@ typedef struct expr
 	};
 } expr_t;
 
+typedef struct
+{
+	char* name;
+	func_decl_t* decl;
+	expr_t* body;
+} type_mem_fn_t;
+
 static const char* g_token_names[NUM_TOKENS] = {
+	"null",
+	
 	"new",
 	"struct",
 	
@@ -359,7 +380,8 @@ static const char* g_value_types[NUM_VALUE_TYPES] = {
 	"string",
 	"func",
 	"array",
-	"struct_instance"
+	"struct_instance",
+	"native"
 };
 
 static const char* g_builtin_type_tags[NUM_BUILTIN_TAGS] = {
@@ -370,7 +392,8 @@ static const char* g_builtin_type_tags[NUM_BUILTIN_TAGS] = {
 	"number",
 	"string",
 	"func",
-	"array"
+	"array",
+	"native"
 };
 
 static int g_line = 1;
@@ -495,6 +518,10 @@ static void write_value(script_value_t* val)
 			}
 			printf(" }");
 		} break;
+		case VAL_NATIVE:
+		{
+			printf("native 0x%X", (unsigned long)val->nat.value);
+		} break;
 	}
 }
 
@@ -571,6 +598,7 @@ static type_tag_t* create_type_tag(tag_t type)
 		{
 			tag->ds.name = NULL;
 			vec_init(&tag->ds.members, sizeof(type_tag_member_t));
+			vec_init(&tag->ds.functions, sizeof(type_mem_fn_t));
 		} break;
 		
 		default: break;
@@ -661,19 +689,10 @@ static void destroy_type_tag(void* vtag)
 	switch(tag->type)
 	{
 		case TAG_FUNC:
-		{
-			/*for(int i = 0; i < tag->func.arg_types.length; ++i)
-				destroy_type_tag(vec_get_value(&tag->func.arg_types, i, type_tag_t*));*/
-			
+		{	
 			vec_destroy(&tag->func.arg_types);
-			// destroy_type_tag(tag->func.return_type);
 		} break;
-		
-		case TAG_ARRAY:
-		{
-			// destroy_type_tag(tag->contained);
-		} break;
-		
+	
 		case TAG_STRUCT:
 		{
 			free(tag->ds.name);
@@ -682,10 +701,16 @@ static void destroy_type_tag(void* vtag)
 			{
 				type_tag_member_t* mem = vec_get(&tag->ds.members, i);
 				free(mem->name);
-				//destroy_type_tag(mem->type);
+			}
+			
+			for(int i = 0; i < tag->ds.functions.length; ++i)
+			{
+				type_mem_fn_t* mem = vec_get(&tag->ds.functions, i);
+				free(mem->name);
 			}
 				
 			vec_destroy(&tag->ds.members);
+			vec_destroy(&tag->ds.functions);
 		} break;
 		
 		default: break;
@@ -962,6 +987,7 @@ static int get_token()
 		}
 		g_lexeme[i] = '\0';
 		
+		if(strcmp(g_lexeme, "null") == 0) return TOK_NULL;
 		if(strcmp(g_lexeme, "new") == 0) return TOK_NEW;
 		if(strcmp(g_lexeme, "struct") == 0) return TOK_STRUCT;
 		if(strcmp(g_lexeme, "extern") == 0) return TOK_EXTERN;
@@ -1051,6 +1077,13 @@ static int get_token()
 		return TOK_LOR;
 	}
 	
+	if(last_char == '/' && last == '/')
+	{
+		last = get_char();
+		while(last != '\n' || last == EOF) last = get_char();
+		return get_token();
+	}
+	
 	if(last_char == '.') return TOK_DOT;
 	
 	if(last_char == ';') return TOK_SEMICOLON;
@@ -1138,6 +1171,7 @@ static expr_t* create_expr(expr_type_t type)
 {
 	expr_t* exp = emalloc(sizeof(expr_t));
 
+	exp->is_shallow_copy = 0;
 	exp->tag = NULL;
 	exp->ctx.file = g_file;
 	exp->ctx.line = g_line;
@@ -1501,15 +1535,65 @@ static expr_t* parse_struct(script_t* script)
 	{
 		if(g_cur_tok != TOK_IDENT) error_exit_p("Expected identifier but received '%s'\n", g_token_names[g_cur_tok]);
 		
-		type_tag_member_t member;
-		member.name = estrdup(g_lexeme);
+		char* name = estrdup(g_lexeme);
 		get_next_token();
 		
-		if(g_cur_tok != TOK_COLON) error_exit_p("Expected ':' but received '%s'\n", g_token_names[g_cur_tok]);
-		get_next_token();
+		if(g_cur_tok != TOK_COLON)
+		{
+			if(g_cur_tok != TOK_OPENPAREN) error_exit_p("Expected ':' or '(' but received '%s'\n", g_token_names[g_cur_tok]);
+			get_next_token();
+			
+			size_t length = strlen(tag->ds.name) + strlen(name) + 2;
+			char buf[length];
+			sprintf(buf, "%s_%s", tag->ds.name, name); 
+			buf[length - 1] = '\0';
+			
+			func_decl_t* decl = declare_function(buf);
+			enter_function(decl);
+			
+			declare_argument("self", tag);
+			
+			// NOTE: Copied from parse_func
+			while(g_cur_tok != TOK_CLOSEPAREN)
+			{
+				if(g_cur_tok != TOK_IDENT) error_exit_p("Expected identifier but received %s\n", g_token_names[g_cur_tok]);
+				char* name = estrdup(g_lexeme);
+				
+				get_next_token();
+				if(g_cur_tok != TOK_COLON) error_exit_p("Expected ':' after '%s' in argument list\n", name);
+				get_next_token();
+				
+				declare_argument(name, parse_type_tag(script));
+				free(name);
+				
+				if(g_cur_tok == TOK_COMMA) get_next_token();
+				else if(g_cur_tok != TOK_CLOSEPAREN) error_exit_p("Unexpected token '%s'\n", g_token_names[g_cur_tok]);
+			}
+			get_next_token();
+				
+			if(g_cur_tok != TOK_COLON) error_exit_p("Expected ':' after ')'\n");
+			get_next_token();
+			decl->tag->func.return_type = parse_type_tag(script);
 		
-		member.type = parse_type_tag(script);
-		vec_push_back(&tag->ds.members, &member);
+			type_mem_fn_t mem;
+			mem.name = name;
+			mem.decl = decl;
+			mem.body = parse_expr(script);
+			
+			vec_push_back(&tag->ds.functions, &mem);
+			
+			exit_function();
+		}
+		else
+		{
+			get_next_token();
+		
+			type_tag_member_t member;
+			member.name = name;
+			member.type = parse_type_tag(script);
+		
+			vec_push_back(&tag->ds.members, &member);
+		}
 	}
 	get_next_token();
 	
@@ -1518,10 +1602,18 @@ static expr_t* parse_struct(script_t* script)
 	return exp;
 }
 
+static expr_t* parse_null(script_t* script)
+{
+	expr_t* exp = create_expr(EXP_NULL);
+	get_next_token();
+	return exp;
+}
+
 static expr_t* parse_factor(script_t* script)
 {
 	switch(g_cur_tok)
 	{
+		case TOK_NULL: return parse_null(script);
 		case TOK_TRUE:
 		case TOK_FALSE: return parse_bool(script);
 		case TOK_CHAR: return parse_char(script);
@@ -1554,7 +1646,7 @@ static int get_prec(int op)
 	{
 		case TOK_ASSIGN: return 0;
 		case TOK_LAND: case TOK_LOR: return 1;
-		case TOK_LT: case TOK_GT: case TOK_LTE: case TOK_GTE: case TOK_EQUALS: return 2;
+		case TOK_LT: case TOK_GT: case TOK_LTE: case TOK_GTE: case TOK_EQUALS: case TOK_NOTEQUAL: return 2;
 		case TOK_PLUS: case TOK_MINUS: return 3;
 		case TOK_MUL: case TOK_DIV: return 4;
 	
@@ -1583,11 +1675,36 @@ static expr_t* parse_post(script_t* script, expr_t* pre)
 			return parse_post(script, exp);
 		} break;
 		
+		case TOK_COLON:
+		{
+			expr_t* exp = create_expr(EXP_COLON);
+			get_next_token();
+			
+			if(g_cur_tok != TOK_IDENT) error_exit_p("Expected identifier after ':' but received '%s'\n", g_token_names[g_cur_tok]);
+			
+			exp->dotx.value = pre;
+			exp->dotx.name = estrdup(g_lexeme);
+			
+			get_next_token();
+			
+			return parse_post(script, exp);
+		} break;
+		
 		case TOK_OPENPAREN:
 		{
 			expr_t* exp = create_expr(EXP_CALL);
 			exp->callx.func = pre;
 			vec_init(&exp->callx.args, sizeof(expr_t*));
+			
+			if(pre->type == EXP_COLON)
+			{
+				expr_t* cpy = create_expr(pre->type);
+				
+				memcpy(cpy, pre->dotx.value, sizeof(expr_t));
+				cpy->is_shallow_copy = 1;
+				
+				vec_push_back(&exp->callx.args, &cpy);
+			}
 			
 			get_next_token();
 			
@@ -1745,6 +1862,11 @@ static void debug_expr(script_t* script, expr_t* exp)
 {
 	switch(exp->type)
 	{
+		case EXP_NULL:
+		{
+			printf("null");
+		} break;
+		
 		case EXP_STRUCT_DECL:
 		{
 			printf("struct %s", exp->struct_tag->ds.name);
@@ -1755,7 +1877,7 @@ static void debug_expr(script_t* script, expr_t* exp)
 			printf("new %s", exp->newx.type->ds.name);
 		} break;
 		
-		case EXP_DOT:
+		case EXP_DOT: case EXP_COLON:
 		{
 			debug_expr(script, exp->dotx.value); printf(".%s", exp->dotx.name);
 		} break;
@@ -1874,110 +1996,122 @@ static void debug_expr(script_t* script, expr_t* exp)
 
 static void delete_expr(expr_t* exp)
 {
-	switch(exp->type)
+	if(!exp->is_shallow_copy)
 	{
-		case EXP_VAR:
+		switch(exp->type)
 		{
-			free(exp->varx.name);
-		} break;
-		
-		case EXP_DOT:
-		{
-			delete_expr(exp->dotx.value);
-			free(exp->dotx.name);
-		} break;
-		
-		case EXP_STRUCT_NEW:
-		{
-			for(int i = 0; i < exp->newx.init.length; ++i)
-				delete_expr(vec_get_value(&exp->newx.init, i, expr_t*));
-			vec_destroy(&exp->newx.init);
-		} break;
-		
-		case EXP_STRUCT_DECL:
-		case EXP_EXTERN:
-		case EXP_BOOL:
-		case EXP_CHAR:
-		case EXP_NUMBER:
-		case EXP_STRING: break;
-		
-		case EXP_PAREN: delete_expr(exp->paren); break;
-		case EXP_BLOCK:
-		{
-			for(int i = 0; i < exp->block.length; ++i)
+			case EXP_VAR:
 			{
-				expr_t* e = vec_get_value(&exp->block, i, expr_t*);
-				delete_expr(e);
-			}
-			vec_destroy(&exp->block);
-		} break;
-		
-		case EXP_ARRAY_INDEX:
-		{
-			delete_expr(exp->array_index.array);
-			delete_expr(exp->array_index.index);
-		} break;
-		
-		case EXP_ARRAY_LITERAL:
-		{
-			for(int i = 0; i < exp->array_literal.values.length; ++i)
-				delete_expr(vec_get_value(&exp->array_literal.values, i, expr_t*));
-			vec_destroy(&exp->array_literal.values);
-		} break;
-		
-		case EXP_LEN:
-		{
-			delete_expr(exp->len);
-		} break;
-		
-		case EXP_UNARY:
-		{
-			delete_expr(exp->unaryx.rhs);
-		} break;
-		
-		case EXP_BINARY:
-		{
-			delete_expr(exp->binx.lhs);
-			delete_expr(exp->binx.rhs);
-		} break;
-		
-		case EXP_CALL:
-		{
-			delete_expr(exp->callx.func);
-			for(int i = 0; i < exp->callx.args.length; ++i)
-				delete_expr(vec_get_value(&exp->callx.args, i, expr_t*));
-			vec_destroy(&exp->callx.args);
-		} break;
-		
-		case EXP_IF:
-		{
-			delete_expr(exp->ifx.cond);
-			delete_expr(exp->ifx.body);
-			if(exp->ifx.alt)
-				delete_expr(exp->ifx.alt);
-		} break;
-		
-		case EXP_WHILE:
-		{
-			delete_expr(exp->whilex.cond);
-			delete_expr(exp->whilex.body);
-		} break;
-		
-		case EXP_RETURN:
-		{
-			if(exp->retx.value)
-				delete_expr(exp->retx.value);
-		} break;
-		
-		case EXP_FUNC:
-		{
-			delete_expr(exp->funcx.body);
-		} break;
-		
-		case EXP_WRITE:
-		{
-			delete_expr(exp->write);
-		} break;
+				free(exp->varx.name);
+			} break;
+			
+			case EXP_DOT: case EXP_COLON:
+			{
+				delete_expr(exp->dotx.value);
+				free(exp->dotx.name);
+			} break;
+			
+			case EXP_STRUCT_NEW:
+			{
+				for(int i = 0; i < exp->newx.init.length; ++i)
+					delete_expr(vec_get_value(&exp->newx.init, i, expr_t*));
+				vec_destroy(&exp->newx.init);
+			} break;
+			
+			case EXP_STRUCT_DECL:
+			{
+				for(int i = 0; i < exp->struct_tag->ds.functions.length; ++i)
+				{
+					type_mem_fn_t* mem = vec_get(&exp->struct_tag->ds.functions, i);
+					delete_expr(mem->body);
+				}
+			} break;
+			
+			case EXP_NULL:
+			case EXP_EXTERN:
+			case EXP_BOOL:
+			case EXP_CHAR:
+			case EXP_NUMBER:
+			case EXP_STRING: break;
+			
+			case EXP_PAREN: delete_expr(exp->paren); break;
+			case EXP_BLOCK:
+			{
+				for(int i = 0; i < exp->block.length; ++i)
+				{
+					expr_t* e = vec_get_value(&exp->block, i, expr_t*);
+					delete_expr(e);
+				}
+				vec_destroy(&exp->block);
+			} break;
+			
+			case EXP_ARRAY_INDEX:
+			{
+				delete_expr(exp->array_index.array);
+				delete_expr(exp->array_index.index);
+			} break;
+			
+			case EXP_ARRAY_LITERAL:
+			{
+				for(int i = 0; i < exp->array_literal.values.length; ++i)
+					delete_expr(vec_get_value(&exp->array_literal.values, i, expr_t*));
+				vec_destroy(&exp->array_literal.values);
+			} break;
+			
+			case EXP_LEN:
+			{
+				delete_expr(exp->len);
+			} break;
+			
+			case EXP_UNARY:
+			{
+				delete_expr(exp->unaryx.rhs);
+			} break;
+			
+			case EXP_BINARY:
+			{
+				delete_expr(exp->binx.lhs);
+				delete_expr(exp->binx.rhs);
+			} break;
+			
+			case EXP_CALL:
+			{
+				delete_expr(exp->callx.func);
+				for(int i = 0; i < exp->callx.args.length; ++i)
+					delete_expr(vec_get_value(&exp->callx.args, i, expr_t*));
+				vec_destroy(&exp->callx.args);
+			} break;
+			
+			case EXP_IF:
+			{
+				delete_expr(exp->ifx.cond);
+				delete_expr(exp->ifx.body);
+				if(exp->ifx.alt)
+					delete_expr(exp->ifx.alt);
+			} break;
+			
+			case EXP_WHILE:
+			{
+				delete_expr(exp->whilex.cond);
+				delete_expr(exp->whilex.body);
+			} break;
+			
+			case EXP_RETURN:
+			{
+				if(exp->retx.value)
+					delete_expr(exp->retx.value);
+			} break;
+			
+			case EXP_FUNC:
+			{
+				delete_expr(exp->funcx.body);
+			} break;
+			
+			case EXP_WRITE:
+			{
+				delete_expr(exp->write);
+			} break;
+		}
 	}
 	
 	free(exp);
@@ -2006,7 +2140,7 @@ static void resolve_symbols(expr_t* exp)
 {
 	switch(exp->type)
 	{
-		case EXP_DOT:
+		case EXP_DOT: case EXP_COLON:
 		{
 			resolve_symbols(exp->dotx.value);
 		} break;
@@ -2018,6 +2152,15 @@ static void resolve_symbols(expr_t* exp)
 		} break;
 		
 		case EXP_STRUCT_DECL:
+		{
+			for(int i = 0; i < exp->struct_tag->ds.functions.length; ++i)
+			{
+				type_mem_fn_t* mem = vec_get(&exp->struct_tag->ds.functions, i);
+				resolve_symbols(mem->body);
+			}
+		} break;
+		
+		case EXP_NULL:
 		case EXP_EXTERN:
 		case EXP_NUMBER:
 		case EXP_STRING:
@@ -2143,10 +2286,10 @@ static void resolve_type_tags(void* vexp)
 	
 	switch(exp->type)
 	{
-		case EXP_DOT:
+		case EXP_DOT: case EXP_COLON:
 		{
 			resolve_type_tags(exp->dotx.value);
-			if(exp->dotx.value->tag->type != TAG_STRUCT) error_defer_e(exp->dotx.value, "Attempted to access ('.') non-struct type\n");
+			if(exp->dotx.value->tag->type != TAG_STRUCT) error_defer_e(exp->dotx.value, "Attempted to access members in non-struct type\n");
 			
 			char found = 0;
 			
@@ -2158,6 +2301,21 @@ static void resolve_type_tags(void* vexp)
 				{
 					exp->tag = mem->type;
 					found = 1;
+					
+					if(exp->type == EXP_COLON) error_defer_e(exp, "Attempted to use ':' operator to access member value; use '.' instead\n");
+					break;
+				}
+			}
+			
+			for(int i = 0; i < tag->ds.functions.length; ++i)
+			{
+				type_mem_fn_t* mem = vec_get(&tag->ds.functions, i);
+				if(strcmp(mem->name, exp->dotx.name) == 0)
+				{
+					exp->tag = mem->decl->tag;
+					found = 1;
+					
+					if(exp->type == EXP_DOT) error_defer_e(exp, "Attempted to use '.' operator to access member function; use ':' instead\n");
 					break;
 				}
 			}
@@ -2169,9 +2327,19 @@ static void resolve_type_tags(void* vexp)
 			}
 		} break;
 		
+		case EXP_NULL:
+		{
+			exp->tag = create_type_tag(TAG_DYNAMIC);
+		} break;
+		
 		case EXP_STRUCT_DECL:
 		{
 			exp->tag = create_type_tag(TAG_VOID);
+			for(int i = 0; i < exp->struct_tag->ds.functions.length; ++i)
+			{
+				type_mem_fn_t* mem = vec_get(&exp->struct_tag->ds.functions, i);
+				resolve_type_tags(mem->body);
+			}
 		} break;
 		
 		case EXP_STRUCT_NEW:
@@ -2253,7 +2421,8 @@ static void resolve_type_tags(void* vexp)
 			{ 
 				if(!compare_type_tags(exp->binx.lhs->tag, exp->binx.rhs->tag) || exp->binx.lhs->tag->type != TAG_NUMBER)
 				{	
-					if(exp->binx.op != TOK_EQUALS && exp->binx.op != TOK_LAND && exp->binx.op != TOK_LOR)
+					if(exp->binx.op != TOK_EQUALS && exp->binx.op != TOK_NOTEQUAL && 
+						exp->binx.op != TOK_LAND && exp->binx.op != TOK_LOR)
 						error_defer_e(exp->binx.lhs, "Invalid types in binary %s operation\n", g_token_names[exp->binx.op]);
 				}
 			}
@@ -2271,7 +2440,8 @@ static void resolve_type_tags(void* vexp)
 				case TOK_GTE:
 				case TOK_LT:
 				case TOK_GT:
-				case TOK_EQUALS: 
+				case TOK_EQUALS:
+				case TOK_NOTEQUAL:
 				case TOK_LAND:
 				case TOK_LOR: exp->tag = create_type_tag(TAG_BOOL); break;
 				
@@ -2427,35 +2597,51 @@ static void compile_call(script_t* script, expr_t* exp)
 	append_code(script, exp->callx.args.length);
 }
 
-static int get_struct_type_member_index(type_tag_t* tag, const char* name)
+static int get_struct_type_member_index(type_tag_t* tag, const char* name, char* is_function)
 {
-	int index = -1;
-	
 	for(int i = 0; i < tag->ds.members.length; ++i)
 	{
 		type_tag_member_t* mem = vec_get(&tag->ds.members, i);
 		if(strcmp(mem->name, name) == 0)
 		{
-			index = i;
-			break;
+			*is_function = 0;
+			return i;
 		}
 	}
 	
-	return index;
+	for(int i = 0; i < tag->ds.functions.length; ++i)
+	{
+		type_mem_fn_t* mem = vec_get(&tag->ds.functions, i);
+		if(strcmp(mem->name, name) == 0)
+		{
+			*is_function = 1;
+			return i;
+		}
+	}
+	
+	return -1;
 }
 
 static void compile_value_expr(script_t* script, expr_t* exp)
 {
 	switch(exp->type)
 	{
+		case EXP_NULL:
+		{
+			append_code(script, OP_PUSH_NULL);
+		} break;
+		
 		case EXP_STRUCT_NEW:
 		{
 			for(int i = exp->newx.init.length - 1; i >= 0; --i)
 			{
 				expr_t* init = vec_get_value(&exp->newx.init, i, expr_t*);
-				int index = get_struct_type_member_index(exp->newx.type, init->binx.lhs->varx.name);
+				char is_function = 0;
+				int index = get_struct_type_member_index(exp->newx.type, init->binx.lhs->varx.name, &is_function);
 				
 				if(index < 0) error_exit_e(init, "Attempted to initialize non-existent member '%s' in struct %s instantiation\n", 
+							  init->binx.lhs->varx.name, exp->newx.type->ds.name);
+				if(is_function) error_exit_e(init, "Attempted to initialize member function '%s' in struct %s instantiation\n",
 							  init->binx.lhs->varx.name, exp->newx.type->ds.name);
 				
 				append_code(script, OP_PUSH_NUMBER);
@@ -2471,12 +2657,34 @@ static void compile_value_expr(script_t* script, expr_t* exp)
 		
 		case EXP_DOT:
 		{
-			int index = get_struct_type_member_index(exp->dotx.value->tag, exp->dotx.name);
+			char is_function = 0;
+			int index = get_struct_type_member_index(exp->dotx.value->tag, exp->dotx.name, &is_function);
 			if(index < 0) error_exit_e(exp, "Attempted to access non-existent member '%s' in struct %s\n", exp->dotx.name, exp->dotx.value->tag->ds.name);
 			
-			compile_value_expr(script, exp->dotx.value);
-			append_code(script, OP_STRUCT_GET);
-			append_int(script, index);
+			if(!is_function)
+			{
+				compile_value_expr(script, exp->dotx.value);
+				append_code(script, OP_STRUCT_GET);
+				append_int(script, index);
+			}
+			else
+				error_exit_e(exp, "Attempted to access member function with '.' operator; use ':' operator instead\n");
+		} break;
+
+		case EXP_COLON:
+		{
+			char is_function = 0;
+			int index = get_struct_type_member_index(exp->dotx.value->tag, exp->dotx.name, &is_function);
+			if(index < 0) error_exit_e(exp, "Attempted to access non-existent member '%s' in struct %s\n", exp->dotx.name, exp->dotx.value->tag->ds.name);
+			
+			if(is_function)
+			{
+				append_code(script, OP_PUSH_FUNC);
+				type_mem_fn_t* mem = vec_get(&exp->dotx.value->tag->ds.functions, index);
+				append_int(script, mem->decl->index);
+			}
+			else
+				error_exit_e(exp, "Attempted to access member value with ':' operator; use '.' operator instead\n");
 		} break;
 			
 		case EXP_BOOL:
@@ -2639,15 +2847,19 @@ static void compile_assign(script_t* script, expr_t* exp)
 		
 		case EXP_DOT:
 		{
-			int index = get_struct_type_member_index(exp->dotx.value->tag, exp->dotx.name);
+			char is_function = 0;
+			int index = get_struct_type_member_index(exp->dotx.value->tag, exp->dotx.name, &is_function);
 			if(index < 0) error_exit_e(exp, "Attempted to access non-existent member '%s' in struct %s\n", exp->dotx.name, exp->dotx.value->tag->ds.name);
+			if(is_function) error_exit_e(exp, "Attempted to assign to member function '%s' of struct %s\n", exp->dotx.name, exp->dotx.value->tag->ds.name);
 			
 			compile_value_expr(script, exp->dotx.value);
 			append_code(script, OP_STRUCT_SET);
 			append_int(script, index);
 		} break;
 		
-		default: break;
+		default: 
+			error_exit_e(exp, "Invalid left-hand-side in assignment expression\n");
+			break;
 	};
 }
 
@@ -2656,6 +2868,28 @@ static void compile_expr(script_t* script, expr_t* exp)
 	switch(exp->type)
 	{
 		case EXP_STRUCT_DECL:
+		{
+			for(int i = 0; i < exp->struct_tag->ds.functions.length; ++i)
+			{
+				type_mem_fn_t* mem = vec_get(&exp->struct_tag->ds.functions, i);
+				
+				// NOTE: Copied from case EXP_FUNC
+				append_code(script, OP_GOTO);
+				int loc = script->code.length;
+				append_int(script, 0);
+				
+				vec_push_back(&script->function_pcs, &script->code.length);
+				
+				for(int i = 0; i < mem->decl->locals.length; ++i)
+					append_code(script, OP_PUSH_NULL);
+				
+				compile_expr(script, mem->body);
+				
+				append_code(script, OP_RETURN);
+				patch_int(script, loc, script->code.length);
+			}
+		} break;
+		
 		case EXP_EXTERN:
 		case EXP_VAR:
 		{
@@ -2778,7 +3012,7 @@ void script_bind_extern(script_t* script, const char* name, script_extern_t ext)
 
 static void ext_make_array_of_length(script_t* script, vector_t* args)
 {
-	script_value_t* val = vec_get_value(args, 0, script_value_t*);
+	script_value_t* val = script_get_arg(args, 0);
 	int length = (int)val->number;
 	
 	vector_t array;
@@ -2792,7 +3026,7 @@ static void ext_make_array_of_length(script_t* script, vector_t* args)
 
 static void ext_char_to_number(script_t* script, vector_t* args)
 {
-	script_value_t* val = vec_get_value(args, 0, script_value_t*);
+	script_value_t* val = script_get_arg(args, 0);
 	script_push_number(script, val->code);
 	script_return_top(script);
 }
@@ -2806,7 +3040,7 @@ static void ext_number_to_char(script_t* script, vector_t* args)
 
 static void ext_number_to_string(script_t* script, vector_t* args)
 {
-	script_value_t* val = vec_get_value(args, 0, script_value_t*);
+	script_value_t* val = script_get_arg(args, 0);
 	static char buf[256]; // TODO: don't use a magic number here
 	sprintf(buf, "%g", val->number);
 	script_push_cstr(script, buf);
@@ -2815,21 +3049,87 @@ static void ext_number_to_string(script_t* script, vector_t* args)
 
 static void ext_string_to_number(script_t* script, vector_t* args)
 {
-	script_value_t* val = vec_get_value(args, 0, script_value_t*);
+	script_value_t* val = script_get_arg(args, 0);
 	script_push_number(script, strtod(val->string.data, NULL));
+	script_return_top(script);
+}
+
+static void ext_read_char(script_t* script, vector_t* args)
+{
+	script_push_char(script, getc(stdin));
 	script_return_top(script);
 }
 
 static void ext_print_char(script_t* script, vector_t* args)
 {
-	script_value_t* val = vec_get_value(args, 0, script_value_t*);
+	script_value_t* val = script_get_arg(args, 0);
 	putchar(val->code);
 }
 
 static void ext_truncate(script_t* script, vector_t* args)
 {
-	script_value_t* val = vec_get_value(args, 0, script_value_t*);
+	script_value_t* val = script_get_arg(args, 0);
 	script_push_number(script, (int)val->number);
+	script_return_top(script);
+}
+
+static void delete_u8_buffer(void* pbuf)
+{
+	vector_t* buf = pbuf;
+	vec_destroy(buf);
+	free(buf);
+}
+
+static void ext_make_u8_buffer(script_t* script, vector_t* args)
+{
+	vector_t* buf = emalloc(sizeof(vector_t));
+	vec_init(buf, sizeof(uint8_t));
+	script_push_native(script, buf, NULL, delete_u8_buffer);
+	script_return_top(script); 
+}
+
+static void ext_u8_buffer_clear(script_t* script, vector_t* args)
+{
+	script_native_t* nat = &script_get_arg(args, 0)->nat;
+	vec_clear(nat->value);
+}
+
+static void ext_u8_buffer_length(script_t* script, vector_t* args)
+{
+	script_native_t* nat = &script_get_arg(args, 0)->nat;
+	script_push_number(script, ((vector_t*)nat->value)->length);
+	script_return_top(script);
+}
+
+static void ext_u8_buffer_push(script_t* script, vector_t* args)
+{
+	script_native_t* nat = &script_get_arg(args, 0)->nat;
+	script_value_t* val = script_get_arg(args, 1);
+	
+	uint8_t value = (uint8_t)val->number;
+	
+	vec_push_back(nat->value, &value);
+}
+
+static void ext_u8_buffer_pop(script_t* script, vector_t* args)
+{
+	script_native_t* nat = &script_get_arg(args, 0)->nat;
+	uint8_t value;
+	vec_pop_back(nat->value, &value);
+	
+	script_push_number(script, value);
+	script_return_top(script);
+}
+
+static void ext_u8_buffer_to_string(script_t* script, vector_t* args)
+{
+	script_native_t* nat = &script_get_arg(args, 0)->nat;
+	vector_t* buf = nat->value;
+	unsigned char null_terminator = '\0';
+	vec_push_back(buf, &null_terminator);
+	script_string_t str = { buf->length, (char*)buf->data };
+	
+	script_push_string(script, str);
 	script_return_top(script);
 }
 
@@ -2844,9 +3144,17 @@ static void bind_default_externs(script_t* script)
 	script_bind_extern(script, "number_to_string", ext_number_to_string);
 	script_bind_extern(script, "string_to_number", ext_string_to_number);
 	
+	script_bind_extern(script, "read_char", ext_read_char);
 	script_bind_extern(script, "print_char", ext_print_char);
 	
 	script_bind_extern(script, "truncate", ext_truncate);
+	
+	script_bind_extern(script, "make_u8_buffer", ext_make_u8_buffer);
+	script_bind_extern(script, "u8_buffer_clear", ext_u8_buffer_clear);
+	script_bind_extern(script, "u8_buffer_length", ext_u8_buffer_length);
+	script_bind_extern(script, "u8_buffer_push", ext_u8_buffer_push);
+	script_bind_extern(script, "u8_buffer_pop", ext_u8_buffer_pop);
+	script_bind_extern(script, "u8_buffer_to_string", ext_u8_buffer_to_string);
 }
 
 void script_init(script_t* script)
@@ -2888,7 +3196,7 @@ void script_init(script_t* script)
 }
 
 static void delete_value(script_value_t* val)
-{
+{	
 	switch(val->type)
 	{
 		case VAL_NULL:
@@ -2900,6 +3208,7 @@ static void delete_value(script_value_t* val)
 		case VAL_STRING: free(val->string.data); break;
 		case VAL_ARRAY: vec_destroy(&val->array); break;
 		case VAL_STRUCT_INSTANCE: vec_destroy(&val->ds.members); break;
+		case VAL_NATIVE: if(val->nat.on_delete) val->nat.on_delete(val->nat.value); break;
 	}
 	
 	free(val);
@@ -2952,6 +3261,7 @@ static int read_int(script_t* script)
 
 static void mark(script_value_t* value)
 {
+	if(!value) return;
 	if(value->marked) return;
 	
 	value->marked = 1;
@@ -2961,7 +3271,7 @@ static void mark(script_value_t* value)
 		for(int i = 0; i < value->array.length; ++i)
 		{	
 			script_value_t* v = vec_get_value(&value->array, i, script_value_t*); 
-			if(v) mark(v);
+			mark(v);
 		}
 	}
 	else if(value->type == VAL_STRUCT_INSTANCE)
@@ -2969,13 +3279,20 @@ static void mark(script_value_t* value)
 		for(int i = 0; i < value->ds.members.length; ++i)
 		{
 			script_value_t* v = vec_get_value(&value->ds.members, i, script_value_t*); 
-			if(v) mark(v);
+			mark(v);
 		}
+	}
+	else if(value->type == VAL_NATIVE)
+	{
+		if(value->nat.on_mark)
+			value->nat.on_mark(value->nat.value);
 	}
 }
 
 static void mark_all(script_t* script)
 {
+	if(script->ret_val)
+		mark(script->ret_val);
 	for(int i = 0; i < script->stack.length; ++i)
 	{
 		script_value_t* val = vec_get_value(&script->stack, i, script_value_t*);
@@ -2985,8 +3302,7 @@ static void mark_all(script_t* script)
 	for(int i = 0; i < script->globals.length; ++i)
 	{
 		script_value_t* val = vec_get_value(&script->globals, i, script_value_t*);
-		if(val)
-			mark(val);
+		mark(val);
 	}
 }
 
@@ -3160,6 +3476,28 @@ static script_function_t pop_func(script_t* script)
 	script_value_t* val = pop_value(script);
 	if(val->type != VAL_FUNC) error_exit_script(script, "Expected function but received %s\n", g_value_types[val->type]);
 	return val->function;
+}
+
+
+void script_push_native(script_t* script, void* value, script_native_callback_t on_mark, script_native_callback_t on_delete)
+{
+	script_value_t* val = new_value(script, VAL_NATIVE);
+	val->nat.value = value;
+	val->nat.on_mark = on_mark;
+	val->nat.on_delete = on_delete;
+	push_value(script, val);
+}
+
+script_native_t* script_pop_native(script_t* script)
+{
+	script_value_t* val = pop_value(script);
+	if(val->type != VAL_NATIVE) error_exit_script(script, "Expected native but received %s\n", g_value_types[val->type]);
+	return &val->nat;
+}
+
+script_value_t* script_get_arg(vector_t* args, int index)
+{
+	return vec_get_value(args, args->length - index - 1, script_value_t*);
 }
 
 static char is_value_null(script_value_t* val)
@@ -3440,6 +3778,7 @@ static char compare_values(script_value_t* a, script_value_t* b)
 	if(a->type != b->type) return 0;
 	switch(a->type)
 	{
+		case VAL_NATIVE: return a->nat.value == b->nat.value;
 		case VAL_BOOL: return a->boolean == b->boolean;
 		case VAL_CHAR: return a->code == b->code;
 		case VAL_NUMBER: return a->number == b->number;

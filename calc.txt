@@ -1,0 +1,147 @@
+extern truncate(number) : number
+extern char_to_number(char) : number
+extern string_to_number(string) : number
+extern number_to_char(number) : char
+extern number_to_string(number) : string
+extern read_char() : char
+extern print_char(char) : void
+
+extern make_u8_buffer() : native
+extern u8_buffer_clear(native) : void
+extern u8_buffer_push(native, number) : void
+extern u8_buffer_to_string(native) : string
+
+struct expr
+{
+	numx : num_expr
+	binx : bin_expr
+}
+
+struct num_expr
+{
+	value : number
+}
+
+struct bin_expr
+{
+	op : char
+	lhs : expr
+	rhs : expr
+}
+
+var last : char = number_to_char(0)
+var lexeme : native = make_u8_buffer()
+var cur_tok : number = 0
+
+var tok_number : number = -1
+var tok_eof : number = -2
+
+func is_space(c : char) : bool
+{
+	if c == ' ' || c == number_to_char(10) || c == number_to_char(11)
+		return true
+	return false
+}
+
+func is_digit(c : char) : bool
+{
+	if char_to_number(c) >= char_to_number('0') && char_to_number(c) <= char_to_number('9')
+		return true
+	return false
+}
+
+func get_token() : number
+{
+	last = read_char()
+	while is_space(last)
+		last = read_char()
+		
+	if is_digit(last)
+	{
+		u8_buffer_clear(lexeme)
+		
+		while is_digit(last)
+		{
+			u8_buffer_push(lexeme, char_to_number(last))
+			last = read_char()
+		}
+		
+		return tok_number
+	}
+	
+	var last_char : char = last
+	last = read_char()
+	
+	if last_char == number_to_char(-1)
+		return tok_eof
+	
+	return char_to_number(last_char)
+}
+
+func get_next_token() : void
+{
+	cur_tok = get_token()
+}
+
+func parse_factor() : expr
+{
+	if cur_tok == tok_number
+	{
+		var value : number = string_to_number(u8_buffer_to_string(lexeme))
+		get_next_token()
+		return new expr {
+			numx = new num_expr {
+				value = value
+			}
+		}
+	}
+	
+	write "unexpected token"
+	return null
+}
+
+func parse_bin_rhs(lhs : expr) : expr
+{
+	var op : char = number_to_char(cur_tok)
+	if op != '+' && op != '-' &&
+	   op != '*' && op != '/'
+		return lhs
+	
+	get_next_token()
+	var rhs : expr = parse_factor()
+	
+	return parse_bin_rhs(new expr {
+		binx = new bin_expr {
+			lhs = lhs,
+			rhs = rhs,
+			op = op
+		}
+	})
+}
+
+func parse_expr() : expr
+{
+	return parse_bin_rhs(parse_factor())
+}
+
+func eval(e : expr) : number
+{
+	if e.numx != null
+		return e.numx.value
+	else if e.binx != null
+	{
+		if e.binx.op == '+'
+			return eval(e.binx.lhs) + eval(e.binx.rhs)
+		else if e.binx.op == '-'
+			return eval(e.binx.lhs) - eval(e.binx.rhs)
+		else if e.binx.op == '*'
+			return eval(e.binx.lhs) * eval(e.binx.rhs)
+		else if e.binx.op == '/'
+			return eval(e.binx.lhs) / eval(e.binx.rhs)
+	}
+	
+	return 0
+}
+
+get_next_token()
+write eval(parse_expr())

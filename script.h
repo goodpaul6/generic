@@ -183,6 +183,11 @@ void script_push_array(script_t* script, size_t length);
 void script_push_premade_array(script_t* script, vector_t array);
 vector_t* script_pop_array(script_t* script);
 
+void script_push_native(script_t* script, void* value, script_native_callback_t on_mark, script_native_callback_t on_delete);
+script_native_t* script_pop_native(script_t* script);
+
+script_value_t* script_get_arg(vector_t* args, int index);
+
 void script_push_null(script_t* script);
 
 void script_return_top(script_t* script);
