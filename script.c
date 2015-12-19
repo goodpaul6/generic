@@ -1739,7 +1739,6 @@ static expr_t* parse_post(script_t* script, expr_t* pre)
 	}
 }
 
-// TODO: Add unary operators
 static expr_t* parse_unary(script_t* script)
 {
 	switch(g_cur_tok)
