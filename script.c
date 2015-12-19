@@ -103,6 +103,8 @@ typedef struct
 
 enum
 {
+	TOK_STATIC,
+	
 	TOK_NULL,
 	
 	TOK_NEW,
@@ -313,6 +315,8 @@ typedef struct
 } type_mem_fn_t;
 
 static const char* g_token_names[NUM_TOKENS] = {
+	"static",
+	
 	"null",
 	
 	"new",
@@ -987,6 +991,7 @@ static int get_token()
 		}
 		g_lexeme[i] = '\0';
 		
+		if(strcmp(g_lexeme, "static") == 0) return TOK_STATIC;
 		if(strcmp(g_lexeme, "null") == 0) return TOK_NULL;
 		if(strcmp(g_lexeme, "new") == 0) return TOK_NEW;
 		if(strcmp(g_lexeme, "struct") == 0) return TOK_STRUCT;
@@ -1533,8 +1538,16 @@ static expr_t* parse_struct(script_t* script)
 	
 	while(g_cur_tok != TOK_CLOSECURLY)
 	{
-		if(g_cur_tok != TOK_IDENT) error_exit_p("Expected identifier but received '%s'\n", g_token_names[g_cur_tok]);
+		char is_static = 0;
 		
+		if(g_cur_tok == TOK_STATIC)
+		{
+			is_static = 1;
+			get_next_token();
+		}
+	
+		if(g_cur_tok != TOK_IDENT) error_exit_p("Expected identifier but received '%s'\n", g_token_names[g_cur_tok]);
+			
 		char* name = estrdup(g_lexeme);
 		get_next_token();
 		
@@ -1551,7 +1564,8 @@ static expr_t* parse_struct(script_t* script)
 			func_decl_t* decl = declare_function(buf);
 			enter_function(decl);
 			
-			declare_argument("self", tag);
+			if(!is_static)
+				declare_argument("self", tag);
 			
 			// NOTE: Copied from parse_func
 			while(g_cur_tok != TOK_CLOSEPAREN)
@@ -4214,6 +4228,16 @@ void script_run_code(script_t* script, const char* code)
 	
 	script->pc = 0;
 	while(script->pc >= 0)
+		execute_cycle(script);
+}
+
+void script_call_function(script_t* script, script_function_t function, int nargs)
+{
+	int fp = script->fp;
+	push_stack_frame(script, (word)nargs);
+	script->pc = vec_get_value(&script->function_pcs, function.index, int);
+	
+	while(script->fp > fp)
 		execute_cycle(script);
 }
 

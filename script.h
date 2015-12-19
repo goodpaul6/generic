@@ -166,6 +166,8 @@ void script_load_run_file(script_t* script, const char* filename);
 void script_run_file(script_t* script, FILE* in);
 void script_run_code(script_t* script, const char* code);
 
+void script_call_function(script_t* script, script_function_t function, int nargs);
+
 void script_push_bool(script_t* script, char bv);
 char script_pop_bool(script_t* script);
 
