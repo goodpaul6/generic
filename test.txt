@@ -1,31 +1,22 @@
 extern iup_label(string) : native
 extern iup_button(string) : native
+
 extern iup_vbox(array-native) : native
+extern iup_append(native, native) : void
+
 extern iup_dialog(native) : native
+
 extern iup_set_attribute(native, string, string) : void
-extern iup_set_callback(native, string, func(native)-number) : void
+extern iup_set_callback(native, string, dynamic, number) : void
+
+extern iup_map(native) : void
 extern iup_show_xy(native, number, number) : void
+
+extern iup_refresh(native) : void
 extern iup_main_loop() : void
 extern iup_close() : void
 
-func callback(self : native) : number
-{
-	write "hello"
-	return 1
-}
-
-var label : native = iup_label("Hello world from IUP.")
-
-var button : native = iup_button("ok")
-iup_set_callback(button, "ACTION", callback)
+var IUP_SELF : number = 0
 
 
-var dlg : native = iup_dialog(iup_vbox([label, button]))
-iup_set_attribute(dlg, "TITLE", "Hello World 2")
-
-iup_show_xy(dlg, 100, 100)
-
-iup_main_loop()
-
-iup_close()
 
