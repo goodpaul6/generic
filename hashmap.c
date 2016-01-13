@@ -159,7 +159,7 @@ static void free_bucket(hashmap_node_t* bucket)
 	}
 }
 
-void map_traverse(hashmap_t* map, hashmap_traverse_t traverse)
+void map_traverse(hashmap_t* map, hashmap_traverse_t traverse, void* data)
 {
 	for(size_t i = 0; i < map->active_buckets.length; ++i)
 	{
@@ -167,7 +167,7 @@ void map_traverse(hashmap_t* map, hashmap_traverse_t traverse)
 		hashmap_node_t* node = map->buckets[pos];
 		while(node)
 		{
-			traverse(node->key, node->value);
+			traverse(node->key, node->value, data);
 			node = node->next;
 		}
 	}

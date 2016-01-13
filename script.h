@@ -4,6 +4,7 @@
 #include <stdio.h>
 
 #include "vector.h"
+#include "hashmap.h"
 
 typedef enum script_op
 {
@@ -154,6 +155,8 @@ typedef struct
 	vector_t externs;
 	
 	vector_t function_pcs;
+	
+	hashmap_t imports;
 } script_t;
 
 typedef void (*script_extern_t)(script_t* script, vector_t* args);

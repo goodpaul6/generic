@@ -14,7 +14,7 @@ typedef struct hashmap_node
 	void* value;
 } hashmap_node_t;
 
-typedef void (*hashmap_traverse_t)(const char* key, void* value);
+typedef void (*hashmap_traverse_t)(const char* key, void* value, void* data);
 
 typedef struct 
 {
@@ -29,7 +29,7 @@ void* map_get(hashmap_t* map, const char* key);
 void map_set(hashmap_t* map, const char* key, void* value);
 void* map_remove(hashmap_t* map, const char* key);
 
-void map_traverse(hashmap_t* map, hashmap_traverse_t traverse);
+void map_traverse(hashmap_t* map, hashmap_traverse_t traverse, void* data);
 
 void map_clear(hashmap_t* map);
 void map_destroy(hashmap_t* map);

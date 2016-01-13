@@ -4186,9 +4186,103 @@ void script_run_file(script_t* script, FILE* in)
 	free(str);
 }
 
+// TODO: Maybe store the g_code and then use the lexer
+// instead to find 'import' tokens and then go from there
+static void resolve_directives(const char* code, hashmap_t* imports, vector_t* buffer)
+{
+	char c = *code++;
+	
+	while(c)
+	{
+		if(c == '#')
+		{	
+			int i = 0;
+			static char dir_name[128];
+			
+			while(i < 128 && !isspace(*code))
+				dir_name[i++] = (c = *code++);
+			dir_name[i] = '\0';
+			
+			if(strcmp(dir_name, "import") == 0)
+			{
+				while(isspace(*code)) 
+					code++;
+				c = *code++;
+				
+				if(c == '"')
+				{
+					int i = 0;
+					static char path[256];
+					
+					while(i < 256 && *code != '"')
+						path[i++] = (c = *code++);
+					path[i] = '\0';
+					c = *code++;
+				
+					char sentinel = '\0';
+					if(!map_get(imports, path))
+					{
+						FILE* file = fopen(path, "r");
+						if(!file)
+						{
+							fprintf(stderr, "Unable to open file '%s' for reading\n", path);
+							exit(1);
+						}
+						
+						map_set(imports, path, &sentinel);
+						
+						fseek(file, 0, SEEK_END);
+						size_t length = ftell(file);
+						fseek(file, 0, SEEK_SET);
+						
+						vector_t read_code;
+						
+						vec_init(&read_code, sizeof(char));
+						vec_resize(&read_code, length - 1, NULL);
+					
+						fread(read_code.data, 1, length - 1, file);
+						fclose(file);
+						
+						resolve_directives((char*)read_code.data, imports, buffer);
+						
+						vec_destroy(&read_code);
+					}
+				}
+				else
+				{
+					fprintf(stderr, "Expected '\"' after 'import'\n");
+					exit(1);
+				}
+			}
+			else
+			{
+				fprintf(stderr, "Invalid directive '%s'\n", dir_name);
+				exit(1);
+			}
+		}
+		else
+			vec_push_back(buffer, &c);
+			
+		c = *code++;
+	}
+}
+
 void script_run_code(script_t* script, const char* code)
 {
-	g_code = code;
+	vector_t codebuf;
+	hashmap_t imports;
+	
+	vec_init(&codebuf, sizeof(char));
+	map_init(&imports);
+	
+	resolve_directives(code, &imports, &codebuf);
+	
+	char null_tm = '\0';
+	vec_push_back(&codebuf, &null_tm);
+	
+	printf("%s\n", (char*)codebuf.data);
+	
+	g_code = (char*)codebuf.data;
 	g_line = 1;
 	
 	reset_type_tags();
