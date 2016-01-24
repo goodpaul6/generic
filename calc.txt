@@ -17,11 +17,6 @@ struct expr
 {
 	numx : num_expr
 	binx : bin_expr
-
-	eval() : number
-	{
-		
-	}
 }
 
 struct num_expr

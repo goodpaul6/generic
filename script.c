@@ -33,7 +33,8 @@ typedef enum
 	TAG_NATIVE,
 	NUM_BUILTIN_TAGS,
 	
-	TAG_STRUCT
+	TAG_STRUCT,
+	TAG_TRAIT
 } tag_t;
 
 typedef struct type_tag
@@ -54,6 +55,7 @@ typedef struct type_tag
 		
 		struct
 		{
+			char is_union;
 			char* name;
 			vector_t members;
 			vector_t functions;
@@ -109,6 +111,7 @@ enum
 	
 	TOK_NEW,
 	TOK_STRUCT,
+	TOK_UNION,
 	TOK_EXTERN,
 	
 	TOK_CHAR,
@@ -321,6 +324,7 @@ static const char* g_token_names[NUM_TOKENS] = {
 	
 	"new",
 	"struct",
+	"union",	
 	
 	"extern",
 	
@@ -524,7 +528,7 @@ static void write_value(script_value_t* val)
 		} break;
 		case VAL_NATIVE:
 		{
-			printf("native 0x%X", (unsigned long)val->nat.value);
+			printf("native 0x%lX", (unsigned long)val->nat.value);
 		} break;
 	}
 }
@@ -601,6 +605,7 @@ static type_tag_t* create_type_tag(tag_t type)
 		case TAG_STRUCT:
 		{
 			tag->ds.name = NULL;
+			tag->ds.is_union = 0;
 			vec_init(&tag->ds.members, sizeof(type_tag_member_t));
 			vec_init(&tag->ds.functions, sizeof(type_mem_fn_t));
 		} break;
@@ -721,7 +726,7 @@ static void destroy_type_tag(void* vtag)
 	}
 }
 
-static type_tag_t* define_struct_type(const char* name)
+static type_tag_t* define_struct_type(const char* name, char is_union)
 {
 	type_tag_t* tag = map_get(&g_user_type_tags, name);
 	if(!tag)
@@ -731,6 +736,7 @@ static type_tag_t* define_struct_type(const char* name)
 		map_set(&g_user_type_tags, name, tag);
 	}
 	
+	tag->ds.is_union = is_union;
 	tag->defined = 1;
 	
 	return tag;
@@ -994,6 +1000,7 @@ static int get_token()
 		if(strcmp(g_lexeme, "static") == 0) return TOK_STATIC;
 		if(strcmp(g_lexeme, "null") == 0) return TOK_NULL;
 		if(strcmp(g_lexeme, "new") == 0) return TOK_NEW;
+		if(strcmp(g_lexeme, "union") == 0) return TOK_UNION;
 		if(strcmp(g_lexeme, "struct") == 0) return TOK_STRUCT;
 		if(strcmp(g_lexeme, "extern") == 0) return TOK_EXTERN;
 		if(strcmp(g_lexeme, "true") == 0) return TOK_TRUE;
@@ -1526,10 +1533,11 @@ static expr_t* parse_func(script_t* script)
 static expr_t* parse_struct(script_t* script)
 {
 	expr_t* exp = create_expr(EXP_STRUCT_DECL);
+	char is_union = g_cur_tok == TOK_UNION;
 	
 	get_next_token();
 	if(g_cur_tok != TOK_IDENT) error_exit_p("Expected identifier after 'struct' but received '%s'\n", g_token_names[g_cur_tok]);
-	type_tag_t* tag = define_struct_type(g_lexeme);
+	type_tag_t* tag = define_struct_type(g_lexeme, is_union);
 	
 	get_next_token();
 	
@@ -1645,6 +1653,7 @@ static expr_t* parse_factor(script_t* script)
 		case TOK_OPENSQUARE: return parse_array_literal(script);
 		case TOK_EXTERN: return parse_extern(script);
 		case TOK_LEN: return parse_len(script);
+		case TOK_UNION:
 		case TOK_STRUCT: return parse_struct(script);
 		
 		default:
@@ -2618,6 +2627,10 @@ static int get_struct_type_member_index(type_tag_t* tag, const char* name, char*
 		if(strcmp(mem->name, name) == 0)
 		{
 			*is_function = 0;
+			// NOTE: In unions, all members are located at the same index (0)
+			if(tag->ds.is_union)
+				return 0;
+				
 			return i;
 		}
 	}
@@ -2664,7 +2677,11 @@ static void compile_value_expr(script_t* script, expr_t* exp)
 			}
 			
 			append_code(script, OP_PUSH_STRUCT);
-			append_int(script, exp->newx.type->ds.members.length);
+			// NOTE: Unions only have 1 member location
+			if(exp->newx.type->ds.is_union)
+				append_int(script, 1);
+			else
+				append_int(script, exp->newx.type->ds.members.length);
 			append_int(script, exp->newx.init.length);
 		} break;
 		
@@ -4275,6 +4292,10 @@ void script_run_code(script_t* script, const char* code)
 	vec_init(&codebuf, sizeof(char));
 	map_init(&imports);
 	
+	char value = 1;
+	if(g_file)
+		map_set(&imports, g_file, &value);
+	
 	resolve_directives(code, &imports, &codebuf);
 	
 	char null_tm = '\0';
@@ -4293,6 +4314,9 @@ void script_run_code(script_t* script, const char* code)
 	vector_t prog = parse_program(script);
 	check_all_tags_defined();
 	if(g_has_error) error_exit("Found errors in script code. Stopping compilation\n");
+
+	vec_destroy(&codebuf);
+	map_destroy(&imports);
 
 	char symbol_error = 0;
 	

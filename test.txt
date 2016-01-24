@@ -1,1 +1,8 @@
-#import "calc.txt"
+union test
+{
+	x : number
+	y : number
+}
+
+var t : test = new test { x = 10 }
+write(t.y)
