@@ -130,6 +130,12 @@ typedef struct script_value
 	};
 } script_value_t;
 
+typedef struct script_module
+{
+	char* local_path;
+	char parsed;
+} script_module_t;
+
 typedef struct
 {
 	char in_extern;
@@ -156,7 +162,7 @@ typedef struct
 	
 	vector_t function_pcs;
 	
-	hashmap_t imports;
+	vector_t modules;
 } script_t;
 
 typedef void (*script_extern_t)(script_t* script, vector_t* args);

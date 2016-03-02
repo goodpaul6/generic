@@ -105,6 +105,8 @@ typedef struct
 
 enum
 {
+	TOK_DIR_IMPORT,
+	
 	TOK_STATIC,
 	
 	TOK_NULL,
@@ -318,6 +320,8 @@ typedef struct
 } type_mem_fn_t;
 
 static const char* g_token_names[NUM_TOKENS] = {
+	"#import",
+	
 	"static",
 	
 	"null",
@@ -978,9 +982,16 @@ static int peek_char()
 	else return c;
 }
 
-static int get_token()
+static int get_token(char reset)
 {
 	static int last = ' ';
+	
+	if(reset)
+	{
+		last = ' ';
+		return;
+	}
+	
 	while(isspace(last))
 	{
 		if(last == '\n') ++g_line;
@@ -988,15 +999,17 @@ static int get_token()
 	}
 	
 	// TODO: check for buffer overflow	
-	if(isalpha(last) || last == '_')
+	if(isalpha(last) || last == '_' || last == '#')
 	{
 		int i = 0;
-		while(isalnum(last) || last == '_')
+		while(isalnum(last) || last == '_' || last == '#')
 		{
 			g_lexeme[i++] = last;
 			last = get_char();
 		}
 		g_lexeme[i] = '\0';
+		
+		if(strcmp(g_lexeme, "#import") == 0) return TOK_DIR_IMPORT;
 		
 		if(strcmp(g_lexeme, "static") == 0) return TOK_STATIC;
 		if(strcmp(g_lexeme, "null") == 0) return TOK_NULL;
@@ -1094,7 +1107,7 @@ static int get_token()
 	{
 		last = get_char();
 		while(last != '\n' || last == EOF) last = get_char();
-		return get_token();
+		return get_token(0);
 	}
 	
 	if(last_char == '.') return TOK_DOT;
@@ -1147,7 +1160,7 @@ static int get_token()
 
 static int get_next_token()
 {
-	g_cur_tok = get_token();
+	g_cur_tok = get_token(0);
 	return g_cur_tok;
 }
 
@@ -1635,10 +1648,44 @@ static expr_t* parse_null(script_t* script)
 	return exp;
 }
 
+static void add_module(script_t* script, const char* local_path)
+{
+	// NOTE: This'll slow down add module a bit (but who cares, how many modules could you possibly have :)
+	for(int i = 0; i < script->modules.length; ++i)
+	{
+		script_module_t* module = vec_get(&script->modules, i);
+		if(strcmp(module->local_path, local_path) == 0)
+			return;
+	}
+	
+	script_module_t module;
+	
+	module.local_path = estrdup(local_path);
+	module.parsed = 0;
+	
+	vec_push_back(&script->modules, &module);
+}
+
+static void apply_import_directive(script_t* script, const char* filename)
+{
+	add_module(script, filename);
+}
+
 static expr_t* parse_factor(script_t* script)
 {
 	switch(g_cur_tok)
 	{
+		case TOK_DIR_IMPORT:
+		{
+			get_next_token();
+			if(g_cur_tok != TOK_STRING) error_exit_p("Expected string after '#import' but received '%s'\n", g_token_names[g_cur_tok]);
+			
+			apply_import_directive(script, g_lexeme);
+			
+			get_next_token();
+			return parse_factor(script);
+		} break;
+	
 		case TOK_NULL: return parse_null(script);
 		case TOK_TRUE:
 		case TOK_FALSE: return parse_bool(script);
@@ -1867,21 +1914,16 @@ static expr_t* parse_expr(script_t* script)
 	return parse_bin_rhs(script, e, 0);
 }
 
-static vector_t parse_program(script_t* script)
+static void parse_program(script_t* script, vector_t* program)
 {
-	vector_t prog;
-	vec_init(&prog, sizeof(expr_t*));
-	
-	g_cur_tok = 0;
+	get_token(1);
 	get_next_token();
 	
 	while(g_cur_tok != TOK_EOF)
 	{
 		expr_t* e = parse_expr(script);
-		vec_push_back(&prog, &e);
+		vec_push_back(program, &e);
 	}
-	
-	return prog;
 }
 
 static void debug_expr(script_t* script, expr_t* exp)
@@ -3226,6 +3268,8 @@ void script_init(script_t* script)
 
 	vec_init(&script->function_pcs, sizeof(int));
 
+	vec_init(&script->modules, sizeof(script_module_t));
+
 	bind_default_externs(script);
 }
 
@@ -4221,6 +4265,7 @@ void script_load_run_file(script_t* script, const char* filename)
 		error_exit("Failed to open file '%s'\n", filename);
 	
 	g_file = filename;
+	add_module(script, filename);
 	
 	script_run_file(script, in);
 
@@ -4237,114 +4282,16 @@ void script_run_file(script_t* script, FILE* in)
 	fread(str, sizeof(char), length, in);
 	str[length] = '\0';
 	
-	script_run_code(script, str);
-	
 	rewind(in);
+	
+	script_run_code(script, str);
 	
 	free(str);
 }
 
-// TODO: Maybe store the g_code and then use the lexer
-// instead to find 'import' tokens and then go from there
-static void resolve_directives(const char* code, hashmap_t* imports, vector_t* buffer)
-{
-	char c = *code++;
-	
-	while(c)
-	{
-		if(c == '#')
-		{	
-			int i = 0;
-			static char dir_name[128];
-			
-			while(i < 128 && !isspace(*code))
-				dir_name[i++] = (c = *code++);
-			dir_name[i] = '\0';
-			
-			if(strcmp(dir_name, "import") == 0)
-			{
-				while(isspace(*code)) 
-					code++;
-				c = *code++;
-				
-				if(c == '"')
-				{
-					int i = 0;
-					static char path[256];
-					
-					while(i < 256 && *code != '"')
-						path[i++] = (c = *code++);
-					path[i] = '\0';
-					c = *code++;
-				
-					char sentinel = '\0';
-					if(!map_get(imports, path))
-					{
-						FILE* file = fopen(path, "r");
-						if(!file)
-						{
-							fprintf(stderr, "Unable to open file '%s' for reading\n", path);
-							exit(1);
-						}
-						
-						map_set(imports, path, &sentinel);
-						
-						fseek(file, 0, SEEK_END);
-						size_t length = ftell(file);
-						fseek(file, 0, SEEK_SET);
-						
-						vector_t read_code;
-						
-						vec_init(&read_code, sizeof(char));
-						vec_resize(&read_code, length - 1, NULL);
-					
-						fread(read_code.data, 1, length - 1, file);
-						fclose(file);
-						
-						resolve_directives((char*)read_code.data, imports, buffer);
-						
-						vec_destroy(&read_code);
-					}
-				}
-				else
-				{
-					fprintf(stderr, "Expected '\"' after 'import'\n");
-					exit(1);
-				}
-			}
-			else
-			{
-				fprintf(stderr, "Invalid directive '%s'\n", dir_name);
-				exit(1);
-			}
-		}
-		else
-			vec_push_back(buffer, &c);
-			
-		c = *code++;
-	}
-}
-
 void script_run_code(script_t* script, const char* code)
 {
-	vector_t codebuf;
-	hashmap_t imports;
-	
-	vec_init(&codebuf, sizeof(char));
-	map_init(&imports);
-	
-	char value = 1;
-	if(g_file)
-		map_set(&imports, g_file, &value);
-	
-	resolve_directives(code, &imports, &codebuf);
-	
-	char null_tm = '\0';
-	vec_push_back(&codebuf, &null_tm);
-	
-	printf("%s\n", (char*)codebuf.data);
-	
-	g_code = (char*)codebuf.data;
+	g_code = code;
 	g_line = 1;
 	
 	reset_type_tags();
@@ -4352,12 +4299,61 @@ void script_run_code(script_t* script, const char* code)
 	
 	reset_script(script);
 
-	vector_t prog = parse_program(script);
+	// NOTE: any modules from which the code is sourced are going to be parsed
+	for(int i = 0; i < script->modules.length; ++i)
+	{
+		script_module_t* module = vec_get(&script->modules, i);
+		module->parsed = 1;
+	}
+
+	vector_t prog;
+	vec_init(&prog, sizeof(expr_t*));
+	
+	parse_program(script, &prog);
+	
+	// NOTE: parse any unparsed modules
+	for(int i = 0; i < script->modules.length; ++i)
+	{
+		script_module_t* module = vec_get(&script->modules, i);
+		
+		if(!module->parsed)
+		{
+			FILE* file = fopen(module->local_path, "r");
+			if(!file)
+			{
+				fprintf(stderr, "Failed to open file '%s' for reading\n", module->local_path);
+				fprintf(stderr, "Skipping module: %s\n", module->local_path);
+				continue;
+			}
+			
+			vector_t codebuf;
+			vec_init(&codebuf, sizeof(char));
+			
+			fseek(file, 0, SEEK_END);
+			size_t length = ftell(file);
+			fseek(file, 0, SEEK_SET);
+			
+			vec_resize(&codebuf, length + 1, NULL);
+			
+			fread(codebuf.data, 1, length, file);			
+			fclose(file);
+			
+			codebuf.data[length] = '\0';
+		
+			g_file = module->local_path;
+			g_line = 1;
+			g_code = (char*)codebuf.data;
+			
+			// NOTE: must be called before parse_program because new modules *might* result
+			// in a relocation of the module values (i.e a vec_realloc call could result in the 
+			// vec.data being moved somewhere else leaving this "module" pointer invalid)
+			module->parsed = 1;
+			parse_program(script, &prog);
+		}
+	}
+	
 	check_all_tags_defined();
 	if(g_has_error) error_exit("Found errors in script code. Stopping compilation\n");
-
-	vec_destroy(&codebuf);
-	map_destroy(&imports);
 
 	char symbol_error = 0;
 	
@@ -4413,6 +4409,12 @@ static void destroy_extern_name(void* p_name)
 	free(name);
 }
 
+static void destroy_modules(void* p_module)
+{
+	script_module_t* module = p_module;
+	free(module->local_path);
+}
+
 void script_destroy(script_t* script)
 {
 	destroy_type_tags();
@@ -4438,4 +4440,7 @@ void script_destroy(script_t* script)
 	vec_destroy(&script->externs);
 	
 	vec_destroy(&script->function_pcs);
+	
+	vec_traverse(&script->modules, destroy_modules);
+	vec_destroy(&script->modules);
 }
