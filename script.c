@@ -629,6 +629,7 @@ static type_tag_t* get_type_tag_from_name(const char* name)
 	}
 	
 	type_tag_t* potential_tag = create_type_tag(TAG_STRUCT);
+	
 	potential_tag->ds.name = estrdup(name);
 	vec_init(&potential_tag->ds.members, sizeof(type_tag_member_t));
 	potential_tag->defined = 0;
@@ -1536,7 +1537,10 @@ static expr_t* parse_struct(script_t* script)
 	char is_union = g_cur_tok == TOK_UNION;
 	
 	get_next_token();
-	if(g_cur_tok != TOK_IDENT) error_exit_p("Expected identifier after 'struct' but received '%s'\n", g_token_names[g_cur_tok]);
+	// if(g_cur_tok != TOK_IDENT) error_exit_p("Expected identifier after 'struct' but received '%s'\n", g_token_names[g_cur_tok]);
+	// type_tag_t* tag = define_struct_type(g_lexeme, is_union);
+	
+	if(g_cur_tok != TOK_IDENT) error_exit_p("Expected identifier after '%s'\n", is_union ? "union" : "struct");
 	type_tag_t* tag = define_struct_type(g_lexeme, is_union);
 	
 	get_next_token();
@@ -3196,7 +3200,7 @@ void script_init(script_t* script)
 	init_symbols();
 
 	script->in_extern = 0;
-
+	
 	script->gc_head = NULL;
 	script->ret_val = NULL;
 	
@@ -3225,7 +3229,44 @@ void script_init(script_t* script)
 	bind_default_externs(script);
 }
 
-static void delete_value(script_value_t* val)
+#if 0
+static void* heap_alloc(script_t* script, size_t size)
+{
+	// NOTE: size of allocation is stored behind
+	// the used memory; the size of the memory allocated
+	// is also aligned to 4-byte boundaries
+	size_t aligned_size = (size + 3) & ~0x03;
+	size_t total_size = sizeof(size_t) + aligned_size;
+	
+	if(script->heap_used + total_size >= script->heap_max) return NULL;
+	
+	unsigned char* ptr = &script->heap[script->heap_used];
+	*(size_t*)ptr = aligned_size;
+	ptr += sizeof(size_t);
+	
+	script->heap_used += total_size;
+	script->heap += total_size;
+	
+	return ptr;
+}
+
+static void heap_free(script_t* script, void* ptr)
+{
+	unsigned char* cp = ptr;
+	
+	cp -= sizeof(size_t);
+	
+	size_t alloc_size = *(size_t*)cp;
+	size_t off = (size_t)(cp - (script->heap - script->heap_used));
+	size_t total_size = sizeof(size_t) + alloc_size;
+	
+	memmove(&script->heap[off], &script->heap[off + total_size], (script->heap_used - off - total_size));
+	
+	script->heap_used -= total_size;
+}
+#endif
+
+static void delete_value(script_t* script, script_value_t* val)
 {	
 	switch(val->type)
 	{
@@ -3249,7 +3290,7 @@ static void destroy_all_values(script_t* script)
 	while(script->gc_head)
 	{
 		script_value_t* next = script->gc_head->next;
-		delete_value(script->gc_head);
+		delete_value(script, script->gc_head);
 		script->gc_head = next;
 	}
 }
@@ -3347,7 +3388,7 @@ static void sweep(script_t* script)
 			script_value_t* unreached = *val;
 			*val = unreached->next;
 			--script->num_objects;
-			delete_value(unreached);
+			delete_value(script, unreached);
 		}
 		else
 		{

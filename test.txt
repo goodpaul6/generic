@@ -1,8 +1,9 @@
-union test
+union vec2
 {
 	x : number
 	y : number
 }
 
-var t : test = new test { x = 10 }
-write(t.y)
+var test : vec2 = new vec2 { x = 10, y = 20 }
+write(test.x)
+write(test.y)
