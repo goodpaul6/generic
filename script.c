@@ -34,8 +34,7 @@ typedef enum
 	TAG_NATIVE,
 	NUM_BUILTIN_TAGS,
 	
-	TAG_STRUCT,
-	TAG_TRAIT
+	TAG_STRUCT
 } tag_t;
 
 typedef struct type_tag
@@ -58,6 +57,8 @@ typedef struct type_tag
 		{
 			char is_union;
 			char* name;
+			size_t size;			// NOTE: size of struct in members
+			vector_t using;
 			vector_t members;
 			vector_t functions;
 		} ds;
@@ -68,6 +69,7 @@ struct expr;
 typedef struct
 {
 	char* name;
+	int index;
 	type_tag_t* type;
 	struct expr* default_value;
 } type_tag_member_t;
@@ -110,6 +112,7 @@ enum
 {
 	TOK_DIR_IMPORT,
 	
+	TOK_USING,
 	TOK_STATIC,
 	
 	TOK_NULL,
@@ -325,6 +328,7 @@ typedef struct
 static const char* g_token_names[NUM_TOKENS] = {
 	"#import",
 	
+	"using",
 	"static",
 	
 	"null",
@@ -619,6 +623,8 @@ static type_tag_t* create_type_tag(tag_t type)
 		{
 			tag->ds.name = NULL;
 			tag->ds.is_union = 0;
+			tag->ds.size = 0;
+			vec_init(&tag->ds.using, sizeof(type_tag_t*));
 			vec_init(&tag->ds.members, sizeof(type_tag_member_t));
 			vec_init(&tag->ds.functions, sizeof(type_mem_fn_t));
 		} break;
@@ -732,6 +738,7 @@ static void destroy_type_tag(void* vtag)
 				free(mem->name);
 			}
 				
+			vec_destroy(&tag->ds.using);
 			vec_destroy(&tag->ds.members);
 			vec_destroy(&tag->ds.functions);
 		} break;
@@ -1020,6 +1027,7 @@ static int get_token(char reset)
 		
 		if(strcmp(g_lexeme, "#import") == 0) return TOK_DIR_IMPORT;
 		
+		if(strcmp(g_lexeme, "using") == 0) return TOK_USING;
 		if(strcmp(g_lexeme, "static") == 0) return TOK_STATIC;
 		if(strcmp(g_lexeme, "null") == 0) return TOK_NULL;
 		if(strcmp(g_lexeme, "new") == 0) return TOK_NEW;
@@ -1572,6 +1580,18 @@ static expr_t* parse_struct(script_t* script)
 	
 	while(g_cur_tok != TOK_CLOSECURLY)
 	{
+		if(g_cur_tok == TOK_USING)
+		{
+			get_next_token();
+			if(g_cur_tok != TOK_IDENT) error_exit_p("Expected identifier after 'using' but received '%s'\n", g_token_names[g_cur_tok]);
+			
+			type_tag_t* used_type = get_type_tag_from_name(g_lexeme);
+			vec_push_back(&tag->ds.using, &used_type);
+			
+			get_next_token();
+			continue;
+		}
+		
 		char is_static = 0;
 		
 		if(g_cur_tok == TOK_STATIC)
@@ -1637,9 +1657,15 @@ static expr_t* parse_struct(script_t* script)
 			get_next_token();
 		
 			type_tag_member_t member;
+			member.index = is_union ? 0 : tag->ds.members.length;
 			member.name = name;
 			member.type = parse_type_tag(script);
 			member.default_value = NULL;
+			
+			if(is_union)
+				tag->ds.size = 1;
+			else
+				tag->ds.size += 1;
 			
 			// NOTE: user is setting a default value for this shit
 			if(g_cur_tok == TOK_ASSIGN)
@@ -2105,7 +2131,7 @@ static void delete_expr(expr_t* exp)
 			} break;
 			
 			case EXP_STRUCT_DECL:
-			{
+			{	
 				for(int i = 0; i < exp->struct_tag->ds.functions.length; ++i)
 				{
 					type_mem_fn_t* mem = vec_get(&exp->struct_tag->ds.functions, i);
@@ -2268,7 +2294,7 @@ static void resolve_symbols(expr_t* exp)
 			{
 				if(reference_function(exp->varx.name)) return;
 				if(get_type_tag_from_name(exp->varx.name)) return;
-				error_defer_e(exp, "Attempted to reference undeclared thing '%s'\n", exp->varx.name);
+				error_defer_e(exp, "Attempted to reference undeclared entity '%s'\n", exp->varx.name);
 			}
 		} break;
 		
@@ -2371,6 +2397,178 @@ static char are_assignment_types_valid(expr_t* lhs, expr_t* rhs)
 	return 1;*/
 }
 
+/*static expr_t* deep_copy_expr(expr_t* exp)
+{
+	expr_t* exp_copy = emalloc(sizeof(expr_t));
+	memcpy(exp_copy, exp, sizeof(expr_t));
+
+	switch(exp->type)
+	{
+		case EXP_DOT: case EXP_COLON:
+		{
+			exp_copy->dotx.value = deep_copy_expr(exp->dotx.value);
+		} break;
+		
+		case EXP_STRUCT_NEW:
+		{
+			vec_init(&exp_copy->newx.init, sizeof(expr_t*));
+			
+			for(int i = 0; i < exp->newx.init.length; ++i)
+			{
+				resolve_symbols(vec_get_value(&exp->newx.init, i, expr_t*));
+			}
+		} break;
+		
+		case EXP_STRUCT_DECL:
+		{
+			for(int i = 0; i < exp->struct_tag->ds.members.length; ++i)
+			{
+				type_tag_member_t* mem = vec_get(&exp->struct_tag->ds.members, i);
+				if(mem->default_value)
+					resolve_symbols(mem->default_value);
+			}
+			
+			for(int i = 0; i < exp->struct_tag->ds.functions.length; ++i)
+			{
+				type_mem_fn_t* mem = vec_get(&exp->struct_tag->ds.functions, i);
+				resolve_symbols(mem->body);
+			}
+		} break;
+		
+		case EXP_NULL:
+		case EXP_EXTERN:
+		case EXP_NUMBER:
+		case EXP_STRING:
+		case EXP_CHAR:
+		case EXP_BOOL: break;
+	
+		case EXP_VAR:
+		{
+			if(exp->varx.decl) return;
+			exp->varx.decl = reference_variable(exp->varx.name);
+			if(!exp->varx.decl) 
+			{
+				if(reference_function(exp->varx.name)) return;
+				if(get_type_tag_from_name(exp->varx.name)) return;
+				error_defer_e(exp, "Attempted to reference undeclared entity '%s'\n", exp->varx.name);
+			}
+		} break;
+		
+		case EXP_UNARY:
+		{
+			resolve_symbols(exp->unaryx.rhs);
+		} break;
+		
+		case EXP_BINARY:
+		{
+			resolve_symbols(exp->binx.lhs);
+			resolve_symbols(exp->binx.rhs);
+		} break;
+		
+		case EXP_PAREN:
+		{
+			resolve_symbols(exp->paren);
+		} break;
+		
+		case EXP_BLOCK:
+		{
+			for(int i = 0; i < exp->block.length; ++i)
+				resolve_symbols(vec_get_value(&exp->block, i, expr_t*));
+		} break;
+		
+		case EXP_ARRAY_INDEX:
+		{
+			resolve_symbols(exp->array_index.array);
+			resolve_symbols(exp->array_index.index);
+		} break;
+		
+		case EXP_ARRAY_LITERAL:
+		{
+			for(int i = 0; i < exp->array_literal.values.length; ++i)
+				resolve_symbols(vec_get_value(&exp->array_literal.values, i, expr_t*));
+		} break;
+		
+		case EXP_IF:
+		{
+			resolve_symbols(exp->ifx.cond);
+			resolve_symbols(exp->ifx.body);
+			if(exp->ifx.alt) resolve_symbols(exp->ifx.alt);
+		} break;
+		
+		case EXP_WHILE:
+		{
+			resolve_symbols(exp->whilex.cond);
+			resolve_symbols(exp->whilex.body);
+		} break;
+		
+		case EXP_RETURN:
+		{
+			if(exp->retx.value)
+				resolve_symbols(exp->retx.value);
+		} break;
+		
+		case EXP_CALL:
+		{
+			for(int i = 0; i < exp->callx.args.length; ++i)
+				resolve_symbols(vec_get_value(&exp->callx.args, i, expr_t*));
+			resolve_symbols(exp->callx.func);
+		} break;
+		
+		case EXP_FUNC:
+		{
+			resolve_symbols(exp->funcx.body);
+		} break;
+		
+		case EXP_WRITE:
+		{
+			resolve_symbols(exp->write);
+		} break;
+		
+		case EXP_LEN:
+		{
+			resolve_symbols(exp->len);
+		} break;
+	}
+	
+	return exp_copy;
+}*/
+
+static void finalize_type(const char* key, void* v_tag, void* data)
+{
+	type_tag_t* tag = v_tag;
+	if(tag->defined)
+	{
+		if(tag->type != TAG_STRUCT) error_exit_c(tag->ctx, "Attempted to use non-struct type in struct '%s'\n", tag->ds.name);
+		
+		for(int using_index = 0; using_index < tag->ds.using.length; ++using_index)
+		{
+			type_tag_t* using = vec_get_value(&tag->ds.using, using_index, type_tag_t*);
+			
+			for(int mem_id = 0; mem_id < using->ds.members.length; ++mem_id)
+			{
+				type_tag_member_t* mem = vec_get(&using->ds.members, mem_id);
+				
+				type_tag_member_t mem_copy;
+				mem_copy.name = estrdup(mem->name);
+				mem_copy.index = mem->index + tag->ds.size;
+				mem_copy.type = mem->type;
+				mem_copy.default_value = mem->default_value;	// TODO: This should be deep copied orrrr
+				
+				vec_push_back(&tag->ds.members, &mem_copy);
+			}
+			
+			tag->ds.size += using->ds.size;
+		}
+	}
+}
+
+// NOTE: Called before 'resolve_symbols' but after 'check_all_tags_defined'
+// NOTE: All the 'using' statements inside structs are evaluated
+static void finalize_types()
+{	
+	map_traverse(&g_user_type_tags, finalize_type, NULL);  
+}
+
 // TODO: Add type names to error messages
 // NOTE: resolve_symbols before this
 static void resolve_type_tags(void* vexp)
@@ -2416,7 +2614,7 @@ static void resolve_type_tags(void* vexp)
 			if(!found)
 			{
 				error_defer_e(exp, "Attempted to access non-existent member '%s' in struct %s\n", exp->dotx.name, tag->ds.name);
-				exp->tag = create_type_tag(TAG_VOID); // prevent crashes
+				exp->tag = create_type_tag(TAG_VOID); // NOTE: only you can prevent crashes
 			}
 		} break;
 		
@@ -2704,17 +2902,17 @@ static void compile_call(script_t* script, expr_t* exp)
 
 static int get_struct_type_member_index(type_tag_t* tag, const char* name, char* is_function)
 {
+	// NOTE: In unions, all members are located at the same index (0)
+	if(tag->ds.is_union)
+		return 0;
+
 	for(int i = 0; i < tag->ds.members.length; ++i)
 	{
 		type_tag_member_t* mem = vec_get(&tag->ds.members, i);
 		if(strcmp(mem->name, name) == 0)
 		{
 			*is_function = 0;
-			// NOTE: In unions, all members are located at the same index (0)
-			if(tag->ds.is_union)
-				return 0;
-				
-			return i;
+			return mem->index;
 		}
 	}
 	
@@ -4497,6 +4695,8 @@ void script_run_code(script_t* script, const char* code)
 	}
 	
 	check_all_tags_defined();
+	finalize_types();
+	
 	if(g_has_error) error_exit("Found errors in script code. Stopping compilation\n");
 
 	char symbol_error = 0;

@@ -1,8 +1,18 @@
-struct vec2
+union data
 {
-	x : number = "hello world"
-	y : number = 10
+	a : number = 10
+	b : number
 }
 
-var pos : vec2 = new vec2 { y = 30 }
-write pos
+struct test
+{
+	type : string = "default"
+	using data
+}
+
+var t : test = new test {
+	a = 20
+}
+
+write t.type
+

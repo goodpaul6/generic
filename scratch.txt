@@ -1,6 +1,24 @@
 TODO:
+- 'using' expressions:
+	struct vec2
+	{
+		x : number = 0
+		y : number = 0
+	}
+	
+	var pos : vec2 = new vec2
+	using pos
+	# x and y in local scope are replaced
+	# with 'pos.x' and 'pos.y'
+	x = x + 10
+
+- deep_copy_expr for member default_value expressions in "finalize_type"
+	or iterate through all types, all members, build a list of the member->default_value pointers
+	and then sort them, iterate over them, and delete the first occurances
+	
+	http://stackoverflow.com/questions/22866364/removing-duplicate-pointers-from-an-array-of-pointers-to-any-generic-type
+  
 - Intrinsics
-- "using x" includes all members of type x into the current struct
 - Store a free-list of unused values for later use
 - Initialize all members of arrays and structs to a GLOBAL null singleton on creation
 - Type-safe container operations (i.e no dynamic):
@@ -24,12 +42,50 @@ TODO:
 			}
 		}
 		
+NOTES:
+- 'using' in structs adds members to the *end* of the struct, never the beginning, regardless of where it appears inside the struct decl		
+
 ISSUES:
+- Default value expressions will leak (they won't be deleted)
+- Discrepancy in function syntax using ':'
+
+	exhibit A:
+	struct test
+	{
+		n : number = 10
+		do_thing() : void
+		{
+			self.n = self.n + 1
+		}
+	}
+	
+	var t : test = new test
+	t:do_thing()
+
+	exhibit B:
+	struct test
+	{
+		n : number = 10
+	}
+
+	func test_do_thing(t : test) : void
+	{
+		t.n = t.n + 1
+	}
+	
+	var t : test = new test
+	t:do_thing()	# compilation error
+
+	basically, the ':' syntax checks for a function in the 'functions' list of the 'test' type tag
+	and since in exhibit B it doesn't exist, this fails to compile. This is a problem; it should be unified
+	and the 'functions' list should be removed
+
 - script_pop_array returns a vector_t* which would be invalid after the object is freed 
   (using that vector_t* after that the gc would cause UB). This is sorta okay since 
   when the script is ->in_extern it doesn't invoke the gc.
 
 IDEAS:
+- Warnings for when you have default values in unions
 - Stack allocated numbers (like a little heap for numbers which grows and shrinks with the stack frames)
 - Copy value operations? (like copy(x, 10) or whatever)
 - Compile-time syntactic macros
