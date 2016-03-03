@@ -66,6 +66,9 @@ typedef enum script_op
 	OP_RETURN,
 	OP_RETURN_VALUE,
 	
+	OP_FILE,
+	OP_LINE,
+	
 	OP_HALT
 } script_op_t;
 
@@ -134,12 +137,19 @@ typedef struct script_module
 {
 	char* local_path;
 	char parsed;
+	vector_t expr_list;
 } script_module_t;
 
 typedef struct
 {
 	char in_extern;
 	int pc, fp;
+	
+	// NOTE:
+	// cur_line = line info for current instruction pointer
+	// cur_file = file name for current instruction pointer
+	int cur_line;
+	const char* cur_file;
 	
 	script_value_t* gc_head;
 	script_value_t* ret_val;
@@ -160,6 +170,7 @@ typedef struct
 	vector_t extern_names;
 	vector_t externs;
 	
+	vector_t function_names;
 	vector_t function_pcs;
 	
 	vector_t modules;
@@ -175,6 +186,7 @@ void script_load_run_file(script_t* script, const char* filename);
 void script_run_file(script_t* script, FILE* in);
 void script_run_code(script_t* script, const char* code);
 
+char script_get_function_by_name(script_t* script, const char* name, script_function_t* function);
 void script_call_function(script_t* script, script_function_t function, int nargs);
 
 void script_push_bool(script_t* script, char bv);

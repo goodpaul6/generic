@@ -1,11 +1,3 @@
-#import "import_test.txt"
+var a : array-number = [] : number
 
-union vec2
-{
-	x : number
-	y : number
-}
-
-var test : vec2 = new vec2 { x = 10, y = 20 }
-write(test.x)
-write(test.y)
+if len a > 0 write "hello"

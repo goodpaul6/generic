@@ -1,5 +1,3 @@
-#import "calc.txt"
-
 extern truncate(number) : number
 extern char_to_number(char) : number
 extern string_to_number(string) : number
@@ -145,5 +143,4 @@ func eval(e : expr) : number
 	return 0
 }
 
-get_next_token()
-write eval(parse_expr())
+write("hello world")

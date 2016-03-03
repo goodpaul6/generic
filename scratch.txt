@@ -1,5 +1,6 @@
 TODO:
 - Struct default values
+- Intrinsics
 - Store a free-list of unused values for later use
 - Initialize all members of arrays and structs to a GLOBAL null singleton on creation
 - Type-safe container operations (i.e no dynamic):

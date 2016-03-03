@@ -7,6 +7,7 @@
 #include <stdarg.h>
 #include <string.h>
 #include <stdint.h>
+#include <math.h>
 
 #define MAX_LEX_CHARS 256
 #define STACK_SIZE 256
@@ -422,6 +423,10 @@ static hashmap_t g_user_type_tags;
 static vector_t g_all_type_tags;
 static char g_has_error = 0;
 
+// NOTE: Used for file and line debug info optimization
+static int g_last_compiled_line = 0;
+static const char* g_last_compiled_file = NULL;
+
 static void error_exit(const char* fmt, ...)
 {
 	fprintf(stderr, "\nError:\n");
@@ -549,13 +554,15 @@ static void print_stack_trace(script_t* script)
 
 static void error_exit_script(script_t* script, const char* fmt, ...)
 {
-	fprintf(stderr, "\nError (%i):\n", script->pc);
-	print_stack_trace(script);
+	fprintf(stderr, "\nError (%s:%i):\n", script->cur_file, script->cur_line);
 	
 	va_list args;
 	va_start(args, fmt);
 	vfprintf(stderr, fmt, args);
 	va_end(args);
+	
+	fprintf(stderr, "\n");
+	print_stack_trace(script);
 	
 	exit(1);
 }
@@ -989,7 +996,7 @@ static int get_token(char reset)
 	if(reset)
 	{
 		last = ' ';
-		return;
+		return 0;
 	}
 	
 	while(isspace(last))
@@ -1662,6 +1669,7 @@ static void add_module(script_t* script, const char* local_path)
 	
 	module.local_path = estrdup(local_path);
 	module.parsed = 0;
+	vec_init(&module.expr_list, sizeof(expr_t*));
 	
 	vec_push_back(&script->modules, &module);
 }
@@ -2694,8 +2702,27 @@ static int get_struct_type_member_index(type_tag_t* tag, const char* name, char*
 	return -1;
 }
 
+static void compile_file_line_info(script_t* script, expr_t* exp, char ignore_last)
+{
+	if(ignore_last || !g_last_compiled_file || strcmp(g_last_compiled_file, exp->ctx.file) != 0)
+	{
+		append_code(script, OP_FILE);
+		append_int(script, register_string(script, exp->ctx.file));
+	}
+	g_last_compiled_file = exp->ctx.file;
+	
+	if(ignore_last || g_last_compiled_line != exp->ctx.line)
+	{
+		append_code(script, OP_LINE);
+		append_int(script, exp->ctx.line);
+	}
+	g_last_compiled_line = exp->ctx.line;	
+}
+
 static void compile_value_expr(script_t* script, expr_t* exp)
 {
+	compile_file_line_info(script, exp, 0);
+	
 	switch(exp->type)
 	{
 		case EXP_NULL:
@@ -2888,6 +2915,9 @@ static void compile_value_expr(script_t* script, expr_t* exp)
 		{
 			compile_call(script, exp);
 			append_code(script, OP_PUSH_RETVAL);
+			
+			// NOTE: because branching
+			compile_file_line_info(script, exp, 1);
 		} break;
 		
 		default:
@@ -2941,6 +2971,8 @@ static void compile_assign(script_t* script, expr_t* exp)
 
 static void compile_expr(script_t* script, expr_t* exp)
 {
+	compile_file_line_info(script, exp, 0);
+	
 	switch(exp->type)
 	{
 		case EXP_STRUCT_DECL:
@@ -3035,6 +3067,8 @@ static void compile_expr(script_t* script, expr_t* exp)
 			int loc = script->code.length;
 			append_int(script, 0);
 			
+			char* name = estrdup(exp->funcx.decl->name);
+			vec_push_back(&script->function_names, &name);
 			vec_push_back(&script->function_pcs, &script->code.length);
 			
 			for(int i = 0; i < exp->funcx.decl->locals.length; ++i)
@@ -3058,6 +3092,9 @@ static void compile_expr(script_t* script, expr_t* exp)
 		case EXP_CALL:
 		{
 			compile_call(script, exp);
+			
+			// NOTE: because branching
+			compile_file_line_info(script, exp, 1);
 		} break;
 		
 		case EXP_WRITE:
@@ -3142,10 +3179,17 @@ static void ext_print_char(script_t* script, vector_t* args)
 	putchar(val->code);
 }
 
-static void ext_truncate(script_t* script, vector_t* args)
+static void ext_floor(script_t* script, vector_t* args)
 {
 	script_value_t* val = script_get_arg(args, 0);
-	script_push_number(script, (int)val->number);
+	script_push_number(script, floor(val->number));
+	script_return_top(script);
+}
+
+static void ext_ceil(script_t* script, vector_t* args)
+{
+	script_value_t* val = script_get_arg(args, 0);
+	script_push_number(script, ceil(val->number));
 	script_return_top(script);
 }
 
@@ -3223,7 +3267,8 @@ static void bind_default_externs(script_t* script)
 	script_bind_extern(script, "read_char", ext_read_char);
 	script_bind_extern(script, "print_char", ext_print_char);
 	
-	script_bind_extern(script, "truncate", ext_truncate);
+	script_bind_extern(script, "floor", ext_floor);
+	script_bind_extern(script, "ceil", ext_ceil);
 	
 	script_bind_extern(script, "make_u8_buffer", ext_make_u8_buffer);
 	script_bind_extern(script, "u8_buffer_clear", ext_u8_buffer_clear);
@@ -3242,6 +3287,9 @@ void script_init(script_t* script)
 	init_symbols();
 
 	script->in_extern = 0;
+	
+	script->cur_file = "unknown";
+	script->cur_line = 0;
 	
 	script->gc_head = NULL;
 	script->ret_val = NULL;
@@ -3265,7 +3313,8 @@ void script_init(script_t* script)
 
 	vec_init(&script->extern_names, sizeof(char*));
 	vec_init(&script->externs, sizeof(script_extern_t));
-
+	
+	vec_init(&script->function_names, sizeof(char*));
 	vec_init(&script->function_pcs, sizeof(int));
 
 	vec_init(&script->modules, sizeof(script_module_t));
@@ -3274,40 +3323,46 @@ void script_init(script_t* script)
 }
 
 #if 0
-static void* heap_alloc(script_t* script, size_t size)
-{
-	// NOTE: size of allocation is stored behind
-	// the used memory; the size of the memory allocated
-	// is also aligned to 4-byte boundaries
-	size_t aligned_size = (size + 3) & ~0x03;
-	size_t total_size = sizeof(size_t) + aligned_size;
-	
-	if(script->heap_used + total_size >= script->heap_max) return NULL;
-	
-	unsigned char* ptr = &script->heap[script->heap_used];
-	*(size_t*)ptr = aligned_size;
-	ptr += sizeof(size_t);
-	
-	script->heap_used += total_size;
-	script->heap += total_size;
-	
-	return ptr;
-}
+// NOTE:
+// This doesn't work because I don't know how to relocate pointers after 
+// resizing the memory pool
+// eventually, I'd like to put in some smart-handle system to do that sort
+// of thing
 
-static void heap_free(script_t* script, void* ptr)
-{
-	unsigned char* cp = ptr;
-	
-	cp -= sizeof(size_t);
-	
-	size_t alloc_size = *(size_t*)cp;
-	size_t off = (size_t)(cp - (script->heap - script->heap_used));
-	size_t total_size = sizeof(size_t) + alloc_size;
-	
-	memmove(&script->heap[off], &script->heap[off + total_size], (script->heap_used - off - total_size));
-	
-	script->heap_used -= total_size;
-}
+	static void* heap_alloc(script_t* script, size_t size)
+	{
+		// NOTE: size of allocation is stored behind
+		// the used memory; the size of the memory allocated
+		// is also aligned to 4-byte boundaries
+		size_t aligned_size = (size + 3) & ~0x03;
+		size_t total_size = sizeof(size_t) + aligned_size;
+		
+		if(script->heap_used + total_size >= script->heap_max) return NULL;
+		
+		unsigned char* ptr = &script->heap[script->heap_used];
+		*(size_t*)ptr = aligned_size;
+		ptr += sizeof(size_t);
+		
+		script->heap_used += total_size;
+		script->heap += total_size;
+		
+		return ptr;
+	}
+
+	static void heap_free(script_t* script, void* ptr)
+	{
+		unsigned char* cp = ptr;
+		
+		cp -= sizeof(size_t);
+		
+		size_t alloc_size = *(size_t*)cp;
+		size_t off = (size_t)(cp - (script->heap - script->heap_used));
+		size_t total_size = sizeof(size_t) + alloc_size;
+		
+		memmove(&script->heap[off], &script->heap[off + total_size], (script->heap_used - off - total_size));
+		
+		script->heap_used -= total_size;
+	}
 #endif
 
 static void delete_value(script_t* script, script_value_t* val)
@@ -3880,6 +3935,20 @@ static void disassemble(script_t* script, FILE* out)
 				fprintf(out, "return_value\n");
 			} break;
 			
+			case OP_FILE:
+			{
+				int index = read_int_at(script, pc);
+				fprintf(out, "file '%s'\n", vec_get_value(&script->strings, index, script_string_t).data);
+				pc += sizeof(int) / sizeof(word);
+			} break;
+			
+			case OP_LINE:
+			{
+				int line_no = read_int_at(script, pc);
+				fprintf(out, "line %d\n", line_no);
+				pc += sizeof(int) / sizeof(word);
+			} break;
+			
 			case OP_HALT:
 			{
 				fprintf(out, "halt\n");
@@ -4250,6 +4319,18 @@ static void execute_cycle(script_t* script)
 			pop_stack_frame(script);
 		} break;
 
+		case OP_FILE:
+		{
+			int index = read_int(script);
+			script->cur_file = vec_get_value(&script->strings, index, script_string_t).data; 
+		} break;
+		
+		case OP_LINE:
+		{
+			int line = read_int(script);
+			script->cur_line = line;
+		} break;
+
 		case OP_HALT:
 		{
 			script->pc = -1;
@@ -4298,18 +4379,15 @@ void script_run_code(script_t* script, const char* code)
 	reset_symbols();
 	
 	reset_script(script);
-
-	// NOTE: any modules from which the code is sourced are going to be parsed
-	for(int i = 0; i < script->modules.length; ++i)
-	{
-		script_module_t* module = vec_get(&script->modules, i);
-		module->parsed = 1;
-	}
-
-	vector_t prog;
-	vec_init(&prog, sizeof(expr_t*));
 	
-	parse_program(script, &prog);
+	// NOTE: if it exists, the module from which the code is sourced is going to be parsed
+	// otherwise, a dummy module is created
+	if(script->modules.length == 0)
+		add_module(script, "__dummy_module");
+		
+	script_module_t* module = vec_get(&script->modules, 0);
+	parse_program(script, &module->expr_list);
+	module->parsed = 1;
 	
 	// NOTE: parse any unparsed modules
 	for(int i = 0; i < script->modules.length; ++i)
@@ -4318,7 +4396,7 @@ void script_run_code(script_t* script, const char* code)
 		
 		if(!module->parsed)
 		{
-			FILE* file = fopen(module->local_path, "r");
+			FILE* file = fopen(module->local_path, "rb");
 			if(!file)
 			{
 				fprintf(stderr, "Failed to open file '%s' for reading\n", module->local_path);
@@ -4344,11 +4422,21 @@ void script_run_code(script_t* script, const char* code)
 			g_line = 1;
 			g_code = (char*)codebuf.data;
 			
-			// NOTE: must be called before parse_program because new modules *might* result
+			// NOTE: new modules *might* result
 			// in a relocation of the module values (i.e a vec_realloc call could result in the 
 			// vec.data being moved somewhere else leaving this "module" pointer invalid)
+			
+			// NOTE: this should not be 'destroyed' because
+			// it is being copied into module->expr_list 
+			vector_t expr_list;
+			vec_init(&expr_list, sizeof(expr_t*));
+			
+			parse_program(script, &expr_list);
+			
+			// NOTE: the module pointer must be reset for above reason
+			module = vec_get(&script->modules, i);
+			module->expr_list = expr_list;
 			module->parsed = 1;
-			parse_program(script, &prog);
 		}
 	}
 	
@@ -4357,22 +4445,42 @@ void script_run_code(script_t* script, const char* code)
 
 	char symbol_error = 0;
 	
-	for(int i = 0; i < prog.length; ++i)
+	// NOTE: modules are compiled in reverse order
+	// because that's how the dependencies work out
+	// ex.
+	/* in file a:
+	 * #import "b"
+	 * some_function_in_b()
+	 * 
+	 * in file b:
+	 * var important_global_variable : something = something
+	 * 
+	 * func some_function_in_b() { do_something(important_global_variable); }
+	 * 
+	 * ^ that will likely crash if b code is run after a code cause the 'important_global_variable' is uninitialized
+	 */ 
+	for(int i = script->modules.length - 1; i >= 0; --i)
 	{
-		expr_t* node = vec_get_value(&prog, i, expr_t*);
+		script_module_t* module = vec_get(&script->modules, i);
+		for(int expr_index = 0; expr_index < module->expr_list.length; ++expr_index)
+		{
+			expr_t* node = vec_get_value(&module->expr_list, expr_index, expr_t*);
 		
-		char prev_error = g_has_error;
-		resolve_symbols(node);
-		symbol_error = prev_error ? 0 : g_has_error;
-		if(!symbol_error) resolve_type_tags(node);
+			char prev_error = g_has_error;
+			resolve_symbols(node);
+			symbol_error = prev_error ? 0 : g_has_error;
+			if(!symbol_error) resolve_type_tags(node);
 		
-		//debug_expr(script, node);
-		//printf("\n");
+			//debug_expr(script, node);
+			//printf("\n");
 		
-		if(!g_has_error) compile_expr(script, node);
-		delete_expr(node);
+			if(!g_has_error) compile_expr(script, node);
+			delete_expr(node);
+		}
+		
+		// NOTE: module->expr_list is no longer valid after this point
+		vec_destroy(&module->expr_list);
 	}
-	vec_destroy(&prog);
 	
 	if(g_has_error) error_exit("Found errors in script code. Stopping compilation\n");
 	
@@ -4384,6 +4492,33 @@ void script_run_code(script_t* script, const char* code)
 	script->pc = 0;
 	while(script->pc >= 0)
 		execute_cycle(script);
+}
+
+char script_get_function_by_name(script_t* script, const char* name, script_function_t* function)
+{
+	for(int i = 0; i < script->function_names.length; ++i)
+	{
+		char* func_name = vec_get_value(&script->function_names, i, char*);
+		if(strcmp(name, func_name) == 0)
+		{
+			function->index = i;
+			function->is_extern = 0;
+			return 1;
+		}
+	}
+	
+	for(int i = 0; i < script->extern_names.length; ++i)
+	{
+		char* extern_name = vec_get_value(&script->extern_names, i, char*);
+		if(strcmp(name, extern_name) == 0)
+		{
+			function->index = i;
+			function->is_extern = 1;
+			return 1;
+		}
+	}
+	
+	return 0;
 }
 
 void script_call_function(script_t* script, script_function_t function, int nargs)
@@ -4403,10 +4538,10 @@ static void destroy_string(void* p_str)
 	str->length = 0;
 }
 
-static void destroy_extern_name(void* p_name)
+static void destroy_cstring(void* p_str)
 {
-	char* name = *(char**)p_name;
-	free(name);
+	char* str = *(char**)p_str;
+	free(str);
 }
 
 static void destroy_modules(void* p_module)
@@ -4434,10 +4569,13 @@ void script_destroy(script_t* script)
 	vec_traverse(&script->strings, destroy_string);
 	vec_destroy(&script->strings);
 	
-	vec_traverse(&script->extern_names, destroy_extern_name);
+	vec_traverse(&script->extern_names, destroy_cstring);
 	vec_destroy(&script->extern_names);
 	
 	vec_destroy(&script->externs);
+	
+	vec_traverse(&script->function_names, destroy_cstring);
+	vec_destroy(&script->function_names);
 	
 	vec_destroy(&script->function_pcs);
 	

@@ -1,4 +1,0 @@
-#import "calc.txt"
-#import "test.txt"
-
-write("this is a module")
