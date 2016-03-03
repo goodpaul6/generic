@@ -1,6 +1,6 @@
 TODO:
-- Struct default values
 - Intrinsics
+- "using x" includes all members of type x into the current struct
 - Store a free-list of unused values for later use
 - Initialize all members of arrays and structs to a GLOBAL null singleton on creation
 - Type-safe container operations (i.e no dynamic):
@@ -26,7 +26,8 @@ TODO:
 		
 ISSUES:
 - script_pop_array returns a vector_t* which would be invalid after the object is freed 
-  (using that vector_t* after that the gc would cause UB)
+  (using that vector_t* after that the gc would cause UB). This is sorta okay since 
+  when the script is ->in_extern it doesn't invoke the gc.
 
 IDEAS:
 - Stack allocated numbers (like a little heap for numbers which grows and shrinks with the stack frames)

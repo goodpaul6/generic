@@ -1,3 +1,8 @@
-var a : array-number = [] : number
+struct vec2
+{
+	x : number = "hello world"
+	y : number = 10
+}
 
-if len a > 0 write "hello"
+var pos : vec2 = new vec2 { y = 30 }
+write pos

@@ -64,10 +64,12 @@ typedef struct type_tag
 	};
 } type_tag_t;
 
+struct expr;
 typedef struct
 {
 	char* name;
 	type_tag_t* type;
+	struct expr* default_value;
 } type_tag_member_t;
 
 typedef enum
@@ -1637,6 +1639,14 @@ static expr_t* parse_struct(script_t* script)
 			type_tag_member_t member;
 			member.name = name;
 			member.type = parse_type_tag(script);
+			member.default_value = NULL;
+			
+			// NOTE: user is setting a default value for this shit
+			if(g_cur_tok == TOK_ASSIGN)
+			{
+				get_next_token();
+				member.default_value = parse_expr(script);
+			}
 		
 			vec_push_back(&tag->ds.members, &member);
 		}
@@ -2229,6 +2239,13 @@ static void resolve_symbols(expr_t* exp)
 		
 		case EXP_STRUCT_DECL:
 		{
+			for(int i = 0; i < exp->struct_tag->ds.members.length; ++i)
+			{
+				type_tag_member_t* mem = vec_get(&exp->struct_tag->ds.members, i);
+				if(mem->default_value)
+					resolve_symbols(mem->default_value);
+			}
+			
 			for(int i = 0; i < exp->struct_tag->ds.functions.length; ++i)
 			{
 				type_mem_fn_t* mem = vec_get(&exp->struct_tag->ds.functions, i);
@@ -2411,6 +2428,18 @@ static void resolve_type_tags(void* vexp)
 		case EXP_STRUCT_DECL:
 		{
 			exp->tag = create_type_tag(TAG_VOID);
+			
+			for(int i = 0; i < exp->struct_tag->ds.members.length; ++i)
+			{
+				type_tag_member_t* mem = vec_get(&exp->struct_tag->ds.members, i);
+				if(mem->default_value)
+				{	
+					resolve_type_tags(mem->default_value);
+					if(!compare_type_tags(mem->type, mem->default_value->tag))
+						error_defer_e(mem->default_value, "Type of default value does not match type of member variable\n");
+				}
+			}
+			
 			for(int i = 0; i < exp->struct_tag->ds.functions.length; ++i)
 			{
 				type_mem_fn_t* mem = vec_get(&exp->struct_tag->ds.functions, i);
@@ -2732,6 +2761,11 @@ static void compile_value_expr(script_t* script, expr_t* exp)
 		
 		case EXP_STRUCT_NEW:
 		{
+			// NOTE: VLA keeping track of which members have been initialized
+			char initialized_members[exp->newx.type->ds.members.length];
+			memset(initialized_members, 0, exp->newx.type->ds.members.length);
+			
+			int num_init = 0;
 			for(int i = exp->newx.init.length - 1; i >= 0; --i)
 			{
 				expr_t* init = vec_get_value(&exp->newx.init, i, expr_t*);
@@ -2743,10 +2777,32 @@ static void compile_value_expr(script_t* script, expr_t* exp)
 				if(is_function) error_exit_e(init, "Attempted to initialize member function '%s' in struct %s instantiation\n",
 							  init->binx.lhs->varx.name, exp->newx.type->ds.name);
 				
+				initialized_members[index] = 1;
+				++num_init;
+				
 				append_code(script, OP_PUSH_NUMBER);
 				append_int(script, register_number(script, index));
 				
 				compile_value_expr(script, init->binx.rhs);
+			}
+			
+			// NOTE: iterate over all the member types, check if they've been
+			// initialized; if they haven't, and they have a default initializer
+			// then use that
+			for(int i = exp->newx.type->ds.members.length - 1; i >= 0; --i)
+			{
+				if(!initialized_members[i])
+				{
+					type_tag_member_t* mem = vec_get(&exp->newx.type->ds.members, i);
+					if(mem->default_value)
+					{
+						append_code(script, OP_PUSH_NUMBER);
+						append_int(script, register_number(script, i));
+						
+						compile_value_expr(script, mem->default_value);
+						++num_init;
+					}
+				}
 			}
 			
 			append_code(script, OP_PUSH_STRUCT);
@@ -2755,7 +2811,7 @@ static void compile_value_expr(script_t* script, expr_t* exp)
 				append_int(script, 1);
 			else
 				append_int(script, exp->newx.type->ds.members.length);
-			append_int(script, exp->newx.init.length);
+			append_int(script, num_init);
 		} break;
 		
 		case EXP_DOT:
