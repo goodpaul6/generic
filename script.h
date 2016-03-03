@@ -182,9 +182,13 @@ void script_init(script_t* script);
 
 void script_bind_extern(script_t* script, const char* name, script_extern_t ext);
 
-void script_load_run_file(script_t* script, const char* filename);
-void script_run_file(script_t* script, FILE* in);
-void script_run_code(script_t* script, const char* code);
+void script_load_parse_file(script_t* script, const char* filename);
+void script_parse_file(script_t* script, FILE* in);
+void script_parse_code(script_t* script, const char* code);
+
+void script_compile(script_t* script);
+void script_dissassemble(script_t* script, FILE* out);
+void script_run(script_t* script);
 
 char script_get_function_by_name(script_t* script, const char* name, script_function_t* function);
 void script_call_function(script_t* script, script_function_t function, int nargs);

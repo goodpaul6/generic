@@ -1,4 +1,7 @@
 TODO:
+- instead of 'error_exit'ing just have the user set an 'error callback function' and
+  return a char from the script_* functions as to whether the operation was successful
+
 - 'using' expressions:
 	struct vec2
 	{
@@ -17,7 +20,7 @@ TODO:
 	and then sort them, iterate over them, and delete the first occurances
 	
 	http://stackoverflow.com/questions/22866364/removing-duplicate-pointers-from-an-array-of-pointers-to-any-generic-type
-  
+
 - Intrinsics
 - Store a free-list of unused values for later use
 - Initialize all members of arrays and structs to a GLOBAL null singleton on creation

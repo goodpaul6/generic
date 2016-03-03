@@ -13,6 +13,3 @@ struct test
 var t : test = new test {
 	a = 20
 }
-
-write t.type
-

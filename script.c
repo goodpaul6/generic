@@ -4592,7 +4592,7 @@ static void execute_cycle(script_t* script)
 	}
 }
 
-void script_load_run_file(script_t* script, const char* filename)
+void script_load_parse_file(script_t* script, const char* filename)
 {
 	FILE* in = fopen(filename, "rb");
 	
@@ -4602,12 +4602,12 @@ void script_load_run_file(script_t* script, const char* filename)
 	g_file = filename;
 	add_module(script, filename);
 	
-	script_run_file(script, in);
+	script_parse_file(script, in);
 
 	fclose(in);
 }
 
-void script_run_file(script_t* script, FILE* in)
+void script_parse_file(script_t* script, FILE* in)
 {
 	fseek(in, 0, SEEK_END);
 	size_t length = ftell(in);
@@ -4619,12 +4619,12 @@ void script_run_file(script_t* script, FILE* in)
 	
 	rewind(in);
 	
-	script_run_code(script, str);
+	script_parse_code(script, str);
 	
 	free(str);
 }
 
-void script_run_code(script_t* script, const char* code)
+void script_parse_code(script_t* script, const char* code)
 {
 	g_code = code;
 	g_line = 1;
@@ -4698,7 +4698,10 @@ void script_run_code(script_t* script, const char* code)
 	finalize_types();
 	
 	if(g_has_error) error_exit("Found errors in script code. Stopping compilation\n");
+}
 
+void script_compile(script_t* script)
+{
 	char symbol_error = 0;
 	
 	// NOTE: modules are compiled in reverse order
@@ -4741,8 +4744,15 @@ void script_run_code(script_t* script, const char* code)
 	if(g_has_error) error_exit("Found errors in script code. Stopping compilation\n");
 	
 	append_code(script, OP_HALT);
-	disassemble(script, stdout);
+}
 
+void script_dissassemble(script_t* script, FILE* out)
+{
+	disassemble(script, out);
+}
+
+void script_run(script_t* script)
+{
 	allocate_globals(script);
 	
 	script->pc = 0;
