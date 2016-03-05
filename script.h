@@ -135,6 +135,9 @@ typedef struct script_value
 
 typedef struct script_module
 {
+	size_t start_pc;				// NOTE: when modules are compiled, their starting pc in code is written here
+	size_t end_pc;					// NOTE: when modules are compiled, their last pc in code is written here
+	char* source_code;
 	char* local_path;
 	char parsed;
 	vector_t expr_list;
@@ -149,7 +152,7 @@ typedef struct script_debug_env
 typedef struct script_debug_breakpoint
 {
 	int pc; 			// NOTE: if this is known ofc (not of user-level use), -1 usually
-	char* file;	// NOTE: If this is null, then any file works
+	char* file;			// NOTE: If this is null, then any file works
 	int line;			// NOTE: If this is -1, then no break occurs
 } script_debug_breakpoint_t;
 

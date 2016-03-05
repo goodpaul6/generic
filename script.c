@@ -1691,7 +1691,7 @@ static expr_t* parse_null(script_t* script)
 	return exp;
 }
 
-static void add_module(script_t* script, const char* local_path)
+static void add_module(script_t* script, const char* local_path, const char* code)
 {
 	// NOTE: This'll slow down add module a bit (but who cares, how many modules could you possibly have :)
 	for(int i = 0; i < script->modules.length; ++i)
@@ -1703,7 +1703,10 @@ static void add_module(script_t* script, const char* local_path)
 	
 	script_module_t module;
 	
+	module.start_pc = -1;
+	module.end_pc = -1;
 	module.local_path = estrdup(local_path);
+	module.source_code = estrdup(code);
 	module.parsed = 0;
 	vec_init(&module.expr_list, sizeof(expr_t*));
 	
@@ -1712,7 +1715,23 @@ static void add_module(script_t* script, const char* local_path)
 
 static void apply_import_directive(script_t* script, const char* filename)
 {
-	add_module(script, filename);
+	FILE* file = fopen(filename, "rb");
+	if(file)
+	{
+		fseek(file, 0, SEEK_END);
+		size_t length = ftell(file);
+		fseek(file, 0, SEEK_SET);
+		
+		char* code = emalloc(length + 1);
+		fread(code, 1, length, file);
+		
+		add_module(script, filename, code);
+		
+		free(code);
+		fclose(file);
+	}
+	else
+		fprintf(stderr, "Unable to open file '%s' for importing\n", filename);
 }
 
 static expr_t* parse_factor(script_t* script)
@@ -3669,6 +3688,7 @@ static void destroy_modules(void* p_module)
 {
 	script_module_t* module = p_module;
 	free(module->local_path);
+	free(module->source_code);
 }
 
 void script_reset(script_t* script)
@@ -4674,7 +4694,7 @@ void script_parse_code(script_t* script, const char* code, const char* module_na
 	
 	// NOTE: adding the current module in and parsing it
 	int current_module_index = script->modules.length;
-	add_module(script, module_name);
+	add_module(script, module_name, code);
 		
 	script_module_t* module = vec_get(&script->modules, current_module_index);
 	parse_program(script, &module->expr_list);
@@ -4695,7 +4715,7 @@ void script_parse_code(script_t* script, const char* code, const char* module_na
 				continue;
 			}
 			
-			vector_t codebuf;
+			/*vector_t codebuf;
 			vec_init(&codebuf, sizeof(char));
 			
 			fseek(file, 0, SEEK_END);
@@ -4707,11 +4727,11 @@ void script_parse_code(script_t* script, const char* code, const char* module_na
 			fread(codebuf.data, 1, length, file);			
 			fclose(file);
 			
-			codebuf.data[length] = '\0';
+			codebuf.data[length] = '\0';*/
 		
 			g_file = module->local_path;
 			g_line = 1;
-			g_code = (char*)codebuf.data;
+			g_code = module->source_code;
 			
 			// NOTE: new modules *might* result
 			// in a relocation of the module values (i.e a vec_realloc call could result in the 
@@ -4758,6 +4778,7 @@ void script_compile(script_t* script)
 	for(int i = script->modules.length - 1; i >= 0; --i)
 	{
 		script_module_t* module = vec_get(&script->modules, i);
+		module->start_pc = script->code.length;
 		for(int expr_index = 0; expr_index < module->expr_list.length; ++expr_index)
 		{
 			expr_t* node = vec_get_value(&module->expr_list, expr_index, expr_t*);
@@ -4773,6 +4794,8 @@ void script_compile(script_t* script)
 			if(!g_has_error) compile_expr(script, node);
 			delete_expr(node);
 		}
+		
+		module->end_pc = script->code.length;
 		
 		// NOTE: module->expr_list is no longer valid after this point
 		vec_destroy(&module->expr_list);
@@ -4799,6 +4822,60 @@ void script_run(script_t* script)
 		execute_cycle(script);
 }
 
+static void read_console_input(char* buf, size_t length)
+{
+	fgets(buf, length, stdin);
+	char* new_line = strrchr(buf, '\n');
+	if(new_line)
+		*new_line = '\0';
+}
+
+static void output_current_line(script_t* script)
+{
+	script_module_t* module = NULL;
+	for(int i = 0; i < script->modules.length; ++i)
+	{
+		script_module_t* m = vec_get(&script->modules, i);
+		if(script->pc >= m->start_pc && script->pc < m->end_pc)
+		{
+			module = m;
+			break;
+		}
+	}
+	
+	if(module)
+	{
+		size_t length = strlen(module->source_code);
+		int line = 1;
+		int offset = -1;
+		for(int i = 0; i < length; ++i)
+		{
+			if(line == script->cur_line)
+			{
+				offset = i;
+				break;
+			}
+			if(module->source_code[i] == '\n') ++line;
+		}
+		
+		if(offset >= 0)
+		{
+			printf("(%s:%d): ", script->cur_file, script->cur_line);
+			char* source = &module->source_code[offset];
+			while(*source != '\n')
+			{
+				putc(*source, stdout);
+				++source;
+			}
+			putc('\n', stdout);
+		}
+		else
+			fprintf(stderr, "Unable to find line %d in source code\n", script->cur_line);
+	}
+	else
+		fprintf(stderr, "Unable to locate module for current pc %d\n", script->pc);
+}
+
 void script_debug(script_t* script, script_debug_env_t* env)
 {
 	vec_init(&env->breakpoints, sizeof(script_debug_breakpoint_t));
@@ -4812,29 +4889,33 @@ void script_debug(script_t* script, script_debug_env_t* env)
 	}
 	
 	char running = 1;
+	char script_running = 0;
 	
 	while(running)
 	{
 		char input[256];
 
 	on_break:
-		fgets(input, 256, stdin);
+		if(script_running)
+			output_current_line(script);
+	
+		read_console_input(input, 256);
 		
-		if(strcmp(input, "run") == 0)
+		if(strcmp(input, "exit") == 0)
+			running = 0;
+		else if(strcmp(input, "run") == 0)
 		{
-			if(env->break_stack.length == 0)
-			{
-				allocate_globals(script);
-				vec_clear(&script->stack);
-				script->pc = 0;
-			}
+			if(!script_running)
+				printf("Running...\n");
 			else
-			{
-				int pc;
-				vec_pop_back(&env->break_stack, &pc); 
-				script->pc = pc;
-			}
+				printf("Restarting...\n");
 			
+			script_running = 1;
+		
+			allocate_globals(script);
+			vec_clear(&script->stack);
+			script->pc = 0;
+		
 			while(script->pc >= 0)
 			{
 				int break_index = -1;
@@ -4856,9 +4937,53 @@ void script_debug(script_t* script, script_debug_env_t* env)
 					vec_push_back(&env->break_stack, &script->pc);
 					goto on_break;
 				}
+				
+			on_continue:
+				execute_cycle(script);
+			}
+			
+			script_running = 0;
+		}
+		else if(strcmp(input, "continue") == 0)
+		{
+			if(env->break_stack.length > 0)
+			{
+				int pc;
+				vec_pop_back(&env->break_stack, &pc); 
+				script->pc = pc;
+				
+				goto on_continue;
+			}
+			else
+				fprintf(stderr, "Cannot continue; no breakpoint encountered\n");
+		}
+		else if(strcmp(input, "dis") == 0)
+			script_dissassemble(script, stdout);
+		else if(strcmp(input, "step") == 0)
+		{
+			if(script_running)
+				execute_cycle(script);
+			else
+				fprintf(stderr, "Cannot step; script is not running\n");
+		}
+		else if(strcmp(input, "break_pc") == 0)
+		{
+			script_debug_breakpoint_t bp;
+			bp.pc = -1;
+			bp.file = NULL;
+			bp.line = -1;
+			
+			printf("pc: ");
+			read_console_input(input, 256);
+		
+			if(input[0])
+			{
+				bp.pc = strtol(input, NULL, 10);		
+				printf("Setting breakpoint at pc %d\n", bp.pc);
+				vec_push_back(&env->breakpoints, &bp);
 			}
 		}
-		if(strcmp(input, "break") == 0)
+		else if(strcmp(input, "break") == 0)
 		{
 			script_debug_breakpoint_t bp;
 			bp.pc = -1;
@@ -4866,12 +4991,12 @@ void script_debug(script_t* script, script_debug_env_t* env)
 			bp.line = -1;
 			
 			printf("file: ");
-			fgets(input, 256, stdin);
+			read_console_input(input, 256);
 			
 			if(input[0])
 				bp.file = estrdup(input);
 			printf("line: ");
-			fgets(input, 256, stdin);
+			read_console_input(input, 256);
 			
 			if(input[0])
 				bp.line = strtol(input, NULL, 10);

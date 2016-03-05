@@ -1,5 +1,3 @@
-struct entity
-{
-	x : number
-	y : number
-}
+var x : number = 10
+var y : number = 20
+var z : number = x + y
