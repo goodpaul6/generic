@@ -20,6 +20,8 @@ int main(int argc, char* argv[])
 	script_load_parse_file(&script, "test.txt");
 	script_compile(&script);
 	
+	script_dissassemble(&script, stdout);
+	
 	LARGE_INTEGER start, end, msec;
 	LARGE_INTEGER freq;
 	

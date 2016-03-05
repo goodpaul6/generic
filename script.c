@@ -2828,7 +2828,10 @@ static void resolve_type_tags(void* vexp)
 				{
 					expr_t* e = vec_get_value(&exp->array_literal.values, i, expr_t*);
 					if(!compare_type_tags(e->tag, tag->contained))
-						tag = create_type_tag(TAG_DYNAMIC);			// okay, so it must be a dynamic literal
+					{
+						tag = create_type_tag(TAG_DYNAMIC);			// NOTE: okay, so it must be a dynamic literal
+						break;										// NOTE: also, we don't care about the types anymore
+					}
 					// error_defer_e(e, "Array literal value type does not match the array's contained type\n");
 				}
 			}
@@ -3545,6 +3548,7 @@ void script_init(script_t* script)
 	script->cur_file = "unknown";
 	script->cur_line = 0;
 	
+	script->free_list = NULL;
 	script->gc_head = NULL;
 	script->ret_val = NULL;
 	
@@ -3619,7 +3623,7 @@ void script_init(script_t* script)
 	}
 #endif
 
-static void delete_value(script_t* script, script_value_t* val)
+static void delete_value(script_t* script, script_value_t* val, char insert_into_free_list)
 {	
 	switch(val->type)
 	{
@@ -3635,7 +3639,13 @@ static void delete_value(script_t* script, script_value_t* val)
 		case VAL_NATIVE: if(val->nat.on_delete) val->nat.on_delete(val->nat.value); break;
 	}
 	
-	free(val);
+	if(insert_into_free_list)
+	{
+		val->next = script->free_list;
+		script->free_list = val;
+	}
+	else
+		free(val);
 }
 
 static void destroy_all_values(script_t* script)
@@ -3643,12 +3653,25 @@ static void destroy_all_values(script_t* script)
 	while(script->gc_head)
 	{
 		script_value_t* next = script->gc_head->next;
-		delete_value(script, script->gc_head);
+		delete_value(script, script->gc_head, 0);
 		script->gc_head = next;
+	}
+	
+	while(script->free_list)
+	{
+		script_value_t* next = script->free_list->next;
+		delete_value(script, script->free_list, 0);
+		script->free_list = next;
 	}
 }
 
-static void reset_script(script_t* script)
+static void destroy_modules(void* p_module)
+{
+	script_module_t* module = p_module;
+	free(module->local_path);
+}
+
+void script_reset(script_t* script)
 {	
 	destroy_all_values(script);
 	
@@ -3660,6 +3683,8 @@ static void reset_script(script_t* script)
 	script->pc = -1;
 	script->fp = 0;
 
+	script->free_list = NULL;
+	script->gc_head = NULL;
 	script->ret_val = NULL;
 
 	vec_clear(&script->globals);
@@ -3670,6 +3695,9 @@ static void reset_script(script_t* script)
 	vec_clear(&script->code);
 	
 	vec_clear(&script->function_pcs);
+	
+	vec_traverse(&script->modules, destroy_modules);
+	vec_clear(&script->modules);
 }
 
 static int read_int(script_t* script)
@@ -3741,7 +3769,7 @@ static void sweep(script_t* script)
 			script_value_t* unreached = *val;
 			*val = unreached->next;
 			--script->num_objects;
-			delete_value(script, unreached);
+			delete_value(script, unreached, 1);
 		}
 		else
 		{
@@ -3762,7 +3790,14 @@ static script_value_t* new_value(script_t* script, script_value_type_t type)
 {
 	if(!script->in_extern && script->num_objects >= script->max_objects_until_gc) collect_garbage(script);
 
-	script_value_t* val = emalloc(sizeof(script_value_t));
+	script_value_t* val;
+	if(script->free_list)
+	{
+		val = script->free_list;
+		script->free_list = script->free_list->next;
+	}
+	else 
+		val = emalloc(sizeof(script_value_t));
 	
 	val->marked = 0;
 	val->type = type;
@@ -3995,9 +4030,12 @@ static void disassemble(script_t* script, FILE* out)
 {
 	int pc = 0;
 	
+	const char* file = "unknown";
+	int line = 0;
+	
 	while(pc < script->code.length)
 	{
-		fprintf(out, "%d: ", pc);
+		fprintf(out, "%d (%s:%i): ", pc, file, line);
 		
 		word code = vec_get_value(&script->code, pc, word);
 		++pc;
@@ -4192,8 +4230,11 @@ static void disassemble(script_t* script, FILE* out)
 			case OP_FILE:
 			{
 				int index = read_int_at(script, pc);
-				fprintf(out, "file '%s'\n", vec_get_value(&script->strings, index, script_string_t).data);
+				const char* str = vec_get_value(&script->strings, index, script_string_t).data;
+				fprintf(out, "file '%s'\n", str);
 				pc += sizeof(int) / sizeof(word);
+				
+				file = str;
 			} break;
 			
 			case OP_LINE:
@@ -4201,6 +4242,7 @@ static void disassemble(script_t* script, FILE* out)
 				int line_no = read_int_at(script, pc);
 				fprintf(out, "line %d\n", line_no);
 				pc += sizeof(int) / sizeof(word);
+				line = line_no;
 			} break;
 			
 			case OP_HALT:
@@ -4600,14 +4642,12 @@ void script_load_parse_file(script_t* script, const char* filename)
 		error_exit("Failed to open file '%s'\n", filename);
 	
 	g_file = filename;
-	add_module(script, filename);
-	
-	script_parse_file(script, in);
+	script_parse_file(script, in, filename);
 
 	fclose(in);
 }
 
-void script_parse_file(script_t* script, FILE* in)
+void script_parse_file(script_t* script, FILE* in, const char* module_name)
 {
 	fseek(in, 0, SEEK_END);
 	size_t length = ftell(in);
@@ -4619,12 +4659,12 @@ void script_parse_file(script_t* script, FILE* in)
 	
 	rewind(in);
 	
-	script_parse_code(script, str);
+	script_parse_code(script, str, module_name);
 	
 	free(str);
 }
 
-void script_parse_code(script_t* script, const char* code)
+void script_parse_code(script_t* script, const char* code, const char* module_name)
 {
 	g_code = code;
 	g_line = 1;
@@ -4632,14 +4672,11 @@ void script_parse_code(script_t* script, const char* code)
 	reset_type_tags();
 	reset_symbols();
 	
-	reset_script(script);
-	
-	// NOTE: if it exists, the module from which the code is sourced is going to be parsed
-	// otherwise, a dummy module is created
-	if(script->modules.length == 0)
-		add_module(script, "__dummy_module");
+	// NOTE: adding the current module in and parsing it
+	int current_module_index = script->modules.length;
+	add_module(script, module_name);
 		
-	script_module_t* module = vec_get(&script->modules, 0);
+	script_module_t* module = vec_get(&script->modules, current_module_index);
 	parse_program(script, &module->expr_list);
 	module->parsed = 1;
 	
@@ -4755,9 +4792,97 @@ void script_run(script_t* script)
 {
 	allocate_globals(script);
 	
+	vec_clear(&script->stack);
+	
 	script->pc = 0;
 	while(script->pc >= 0)
 		execute_cycle(script);
+}
+
+void script_debug(script_t* script, script_debug_env_t* env)
+{
+	vec_init(&env->breakpoints, sizeof(script_debug_breakpoint_t));
+	vec_init(&env->break_stack, sizeof(int));
+	
+	printf("Debugging script...\nFollowing modules loaded:\n");
+	for(int i = 0; i < script->modules.length; ++i)
+	{
+		script_module_t* module = vec_get(&script->modules, i);
+		printf("%s\n", module->local_path);
+	}
+	
+	char running = 1;
+	
+	while(running)
+	{
+		char input[256];
+
+	on_break:
+		fgets(input, 256, stdin);
+		
+		if(strcmp(input, "run") == 0)
+		{
+			if(env->break_stack.length == 0)
+			{
+				allocate_globals(script);
+				vec_clear(&script->stack);
+				script->pc = 0;
+			}
+			else
+			{
+				int pc;
+				vec_pop_back(&env->break_stack, &pc); 
+				script->pc = pc;
+			}
+			
+			while(script->pc >= 0)
+			{
+				int break_index = -1;
+				for(int i = 0; i < env->breakpoints.length; ++i)
+				{
+					script_debug_breakpoint_t* bp = vec_get(&env->breakpoints, i);
+					if((bp->line == script->cur_line && strcmp(bp->file, script->cur_file) == 0) ||
+						bp->pc == script->pc)
+					{
+						break_index = i;
+						break;
+					}
+				}
+				
+				if(break_index >= 0)
+				{
+					script_debug_breakpoint_t* bp = vec_get(&env->breakpoints, break_index);
+					printf("Hit breakpoint %d (%s:%d)\n", break_index, bp->file, bp->line);
+					vec_push_back(&env->break_stack, &script->pc);
+					goto on_break;
+				}
+			}
+		}
+		if(strcmp(input, "break") == 0)
+		{
+			script_debug_breakpoint_t bp;
+			bp.pc = -1;
+			bp.file = NULL;
+			bp.line = -1;
+			
+			printf("file: ");
+			fgets(input, 256, stdin);
+			
+			if(input[0])
+				bp.file = estrdup(input);
+			printf("line: ");
+			fgets(input, 256, stdin);
+			
+			if(input[0])
+				bp.line = strtol(input, NULL, 10);
+			
+			printf("Setting breakpoint at %s:%i\n", bp.file, bp.line);
+			vec_push_back(&env->breakpoints, &bp);
+		}
+	}
+	
+	vec_destroy(&env->breakpoints);
+	vec_destroy(&env->break_stack);
 }
 
 char script_get_function_by_name(script_t* script, const char* name, script_function_t* function)
@@ -4808,12 +4933,6 @@ static void destroy_cstring(void* p_str)
 {
 	char* str = *(char**)p_str;
 	free(str);
-}
-
-static void destroy_modules(void* p_module)
-{
-	script_module_t* module = p_module;
-	free(module->local_path);
 }
 
 void script_destroy(script_t* script)

@@ -140,6 +140,19 @@ typedef struct script_module
 	vector_t expr_list;
 } script_module_t;
 
+typedef struct script_debug_env
+{
+	vector_t breakpoints;
+	vector_t break_stack;
+} script_debug_env_t;
+
+typedef struct script_debug_breakpoint
+{
+	int pc; 			// NOTE: if this is known ofc (not of user-level use), -1 usually
+	char* file;	// NOTE: If this is null, then any file works
+	int line;			// NOTE: If this is -1, then no break occurs
+} script_debug_breakpoint_t;
+
 typedef struct
 {
 	char in_extern;
@@ -151,6 +164,7 @@ typedef struct
 	int cur_line;
 	const char* cur_file;
 	
+	script_value_t* free_list;
 	script_value_t* gc_head;
 	script_value_t* ret_val;
 	
@@ -182,13 +196,16 @@ void script_init(script_t* script);
 
 void script_bind_extern(script_t* script, const char* name, script_extern_t ext);
 
+void script_reset(script_t* script);
+
 void script_load_parse_file(script_t* script, const char* filename);
-void script_parse_file(script_t* script, FILE* in);
-void script_parse_code(script_t* script, const char* code);
+void script_parse_file(script_t* script, FILE* in, const char* module_name);
+void script_parse_code(script_t* script, const char* code, const char* module_name);
 
 void script_compile(script_t* script);
 void script_dissassemble(script_t* script, FILE* out);
 void script_run(script_t* script);
+void script_debug(script_t* script, script_debug_env_t* env);
 
 char script_get_function_by_name(script_t* script, const char* name, script_function_t* function);
 void script_call_function(script_t* script, script_function_t function, int nargs);

@@ -1,15 +1,5 @@
-union data
+struct entity
 {
-	a : number = 10
-	b : number
-}
-
-struct test
-{
-	type : string = "default"
-	using data
-}
-
-var t : test = new test {
-	a = 20
+	x : number
+	y : number
 }
