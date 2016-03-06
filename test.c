@@ -29,7 +29,11 @@ int main(int argc, char* argv[])
 	
 	QueryPerformanceCounter(&start);
 	for(int i = 0; i < strtol(argv[1], NULL, 10); ++i)
+	{	
+		
 		script_run(&script);
+	}
+	
 	QueryPerformanceCounter(&end);
 	
 	msec.QuadPart = end.QuadPart - start.QuadPart;

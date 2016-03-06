@@ -46,7 +46,7 @@ typedef enum script_op
 	
 	OP_NEG,
 	OP_NOT,
-	
+
 	OP_EQU,
 	
 	OP_READ,
@@ -141,6 +141,7 @@ typedef struct script_module
 	char* local_path;
 	char parsed;
 	vector_t expr_list;
+	vector_t compile_time_funcs;	// NOTE: array of expr_t's which should be executed when the module is compiled
 } script_module_t;
 
 typedef struct script_debug_env

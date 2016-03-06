@@ -110,7 +110,7 @@ typedef struct
 
 enum
 {
-	TOK_DIR_IMPORT,
+	TOK_DIRECTIVE,
 	
 	TOK_USING,
 	TOK_STATIC,
@@ -326,7 +326,7 @@ typedef struct
 } type_mem_fn_t;
 
 static const char* g_token_names[NUM_TOKENS] = {
-	"#import",
+	"#",
 	
 	"using",
 	"static",
@@ -428,6 +428,7 @@ static func_decl_t* g_cur_func = NULL;
 static hashmap_t g_user_type_tags;
 static vector_t g_all_type_tags;
 static char g_has_error = 0;
+static int g_cur_module_index = NULL;
 
 // NOTE: Used for file and line debug info optimization
 static int g_last_compiled_line = 0;
@@ -589,6 +590,129 @@ static char* estrdup(const char* str)
 	return cpy;
 }
 
+static void delete_expr(expr_t* exp)
+{
+	if(!exp->is_shallow_copy)
+	{
+		switch(exp->type)
+		{
+			case EXP_VAR:
+			{
+				free(exp->varx.name);
+			} break;
+			
+			case EXP_DOT: case EXP_COLON:
+			{
+				delete_expr(exp->dotx.value);
+				free(exp->dotx.name);
+			} break;
+			
+			case EXP_STRUCT_NEW:
+			{
+				for(int i = 0; i < exp->newx.init.length; ++i)
+					delete_expr(vec_get_value(&exp->newx.init, i, expr_t*));
+				vec_destroy(&exp->newx.init);
+			} break;
+			
+			case EXP_STRUCT_DECL:
+			{	
+				for(int i = 0; i < exp->struct_tag->ds.functions.length; ++i)
+				{
+					type_mem_fn_t* mem = vec_get(&exp->struct_tag->ds.functions, i);
+					delete_expr(mem->body);
+				}
+			} break;
+			
+			case EXP_NULL:
+			case EXP_EXTERN:
+			case EXP_BOOL:
+			case EXP_CHAR:
+			case EXP_NUMBER:
+			case EXP_STRING: break;
+			
+			case EXP_PAREN: delete_expr(exp->paren); break;
+			case EXP_BLOCK:
+			{
+				for(int i = 0; i < exp->block.length; ++i)
+				{
+					expr_t* e = vec_get_value(&exp->block, i, expr_t*);
+					delete_expr(e);
+				}
+				vec_destroy(&exp->block);
+			} break;
+			
+			case EXP_ARRAY_INDEX:
+			{
+				delete_expr(exp->array_index.array);
+				delete_expr(exp->array_index.index);
+			} break;
+			
+			case EXP_ARRAY_LITERAL:
+			{
+				for(int i = 0; i < exp->array_literal.values.length; ++i)
+					delete_expr(vec_get_value(&exp->array_literal.values, i, expr_t*));
+				vec_destroy(&exp->array_literal.values);
+			} break;
+			
+			case EXP_LEN:
+			{
+				delete_expr(exp->len);
+			} break;
+			
+			case EXP_UNARY:
+			{
+				delete_expr(exp->unaryx.rhs);
+			} break;
+			
+			case EXP_BINARY:
+			{
+				delete_expr(exp->binx.lhs);
+				delete_expr(exp->binx.rhs);
+			} break;
+			
+			case EXP_CALL:
+			{
+				delete_expr(exp->callx.func);
+				for(int i = 0; i < exp->callx.args.length; ++i)
+					delete_expr(vec_get_value(&exp->callx.args, i, expr_t*));
+				vec_destroy(&exp->callx.args);
+			} break;
+			
+			case EXP_IF:
+			{
+				delete_expr(exp->ifx.cond);
+				delete_expr(exp->ifx.body);
+				if(exp->ifx.alt)
+					delete_expr(exp->ifx.alt);
+			} break;
+			
+			case EXP_WHILE:
+			{
+				delete_expr(exp->whilex.cond);
+				delete_expr(exp->whilex.body);
+			} break;
+			
+			case EXP_RETURN:
+			{
+				if(exp->retx.value)
+					delete_expr(exp->retx.value);
+			} break;
+			
+			case EXP_FUNC:
+			{
+				delete_expr(exp->funcx.body);
+			} break;
+			
+			case EXP_WRITE:
+			{
+				delete_expr(exp->write);
+			} break;
+		}
+	}
+	
+	free(exp);
+}
+
 static void init_type_tags()
 {
 	map_init(&g_user_type_tags);
@@ -730,6 +854,8 @@ static void destroy_type_tag(void* vtag)
 			{
 				type_tag_member_t* mem = vec_get(&tag->ds.members, i);
 				free(mem->name);
+				if(mem->default_value)
+					delete_expr(mem->default_value);
 			}
 			
 			for(int i = 0; i < tag->ds.functions.length; ++i)
@@ -1025,7 +1151,7 @@ static int get_token(char reset)
 		}
 		g_lexeme[i] = '\0';
 		
-		if(strcmp(g_lexeme, "#import") == 0) return TOK_DIR_IMPORT;
+		if(g_lexeme[0] == '#') return TOK_DIRECTIVE;
 		
 		if(strcmp(g_lexeme, "using") == 0) return TOK_USING;
 		if(strcmp(g_lexeme, "static") == 0) return TOK_STATIC;
@@ -1709,6 +1835,7 @@ static void add_module(script_t* script, const char* local_path, const char* cod
 	module.source_code = estrdup(code);
 	module.parsed = 0;
 	vec_init(&module.expr_list, sizeof(expr_t*));
+	vec_init(&module.compile_time_funcs, sizeof(expr_t*));
 	
 	vec_push_back(&script->modules, &module);
 }
@@ -1724,6 +1851,7 @@ static void apply_import_directive(script_t* script, const char* filename)
 		
 		char* code = emalloc(length + 1);
 		fread(code, 1, length, file);
+		code[length] = '\0';
 		
 		add_module(script, filename, code);
 		
@@ -1734,21 +1862,43 @@ static void apply_import_directive(script_t* script, const char* filename)
 		fprintf(stderr, "Unable to open file '%s' for importing\n", filename);
 }
 
+static expr_t* parse_factor(script_t* script);
+static expr_t* parse_directive(script_t* script)
+{
+	if(strcmp(g_lexeme, "#import") == 0)
+	{
+		get_next_token();
+		
+		if(g_cur_tok != TOK_STRING) error_exit_p("Expected string after '#import' but received '%s'\n", g_token_names[g_cur_tok]);
+		
+		apply_import_directive(script, g_lexeme);
+		get_next_token();
+	
+		return parse_factor(script);
+	}
+	else if(strcmp(g_lexeme, "#on_compile") == 0)
+	{
+		get_next_token();
+		
+		if(g_cur_tok != TOK_FUNC) error_exit_p("Expected 'func' after '#on_compile' but received '%s'\n", g_token_names[g_cur_tok]);
+		
+		expr_t* exp = parse_func(script);
+		
+		script_module_t* cur_module = vec_get(&script->modules, g_cur_module_index);
+		vec_push_back(&cur_module->compile_time_funcs, &exp);
+		
+		return exp;
+	}
+	else
+		error_exit_p("Invalid directive '%s'\n", g_lexeme);
+	return NULL;
+}
+
 static expr_t* parse_factor(script_t* script)
 {
 	switch(g_cur_tok)
 	{
-		case TOK_DIR_IMPORT:
-		{
-			get_next_token();
-			if(g_cur_tok != TOK_STRING) error_exit_p("Expected string after '#import' but received '%s'\n", g_token_names[g_cur_tok]);
-			
-			apply_import_directive(script, g_lexeme);
-			
-			get_next_token();
-			return parse_factor(script);
-		} break;
-	
+		case TOK_DIRECTIVE: return parse_directive(script);
 		case TOK_NULL: return parse_null(script);
 		case TOK_TRUE:
 		case TOK_FALSE: return parse_bool(script);
@@ -2125,129 +2275,6 @@ static void debug_expr(script_t* script, expr_t* exp)
 	}
 }
 
-static void delete_expr(expr_t* exp)
-{
-	if(!exp->is_shallow_copy)
-	{
-		switch(exp->type)
-		{
-			case EXP_VAR:
-			{
-				free(exp->varx.name);
-			} break;
-			
-			case EXP_DOT: case EXP_COLON:
-			{
-				delete_expr(exp->dotx.value);
-				free(exp->dotx.name);
-			} break;
-			
-			case EXP_STRUCT_NEW:
-			{
-				for(int i = 0; i < exp->newx.init.length; ++i)
-					delete_expr(vec_get_value(&exp->newx.init, i, expr_t*));
-				vec_destroy(&exp->newx.init);
-			} break;
-			
-			case EXP_STRUCT_DECL:
-			{	
-				for(int i = 0; i < exp->struct_tag->ds.functions.length; ++i)
-				{
-					type_mem_fn_t* mem = vec_get(&exp->struct_tag->ds.functions, i);
-					delete_expr(mem->body);
-				}
-			} break;
-			
-			case EXP_NULL:
-			case EXP_EXTERN:
-			case EXP_BOOL:
-			case EXP_CHAR:
-			case EXP_NUMBER:
-			case EXP_STRING: break;
-			
-			case EXP_PAREN: delete_expr(exp->paren); break;
-			case EXP_BLOCK:
-			{
-				for(int i = 0; i < exp->block.length; ++i)
-				{
-					expr_t* e = vec_get_value(&exp->block, i, expr_t*);
-					delete_expr(e);
-				}
-				vec_destroy(&exp->block);
-			} break;
-			
-			case EXP_ARRAY_INDEX:
-			{
-				delete_expr(exp->array_index.array);
-				delete_expr(exp->array_index.index);
-			} break;
-			
-			case EXP_ARRAY_LITERAL:
-			{
-				for(int i = 0; i < exp->array_literal.values.length; ++i)
-					delete_expr(vec_get_value(&exp->array_literal.values, i, expr_t*));
-				vec_destroy(&exp->array_literal.values);
-			} break;
-			
-			case EXP_LEN:
-			{
-				delete_expr(exp->len);
-			} break;
-			
-			case EXP_UNARY:
-			{
-				delete_expr(exp->unaryx.rhs);
-			} break;
-			
-			case EXP_BINARY:
-			{
-				delete_expr(exp->binx.lhs);
-				delete_expr(exp->binx.rhs);
-			} break;
-			
-			case EXP_CALL:
-			{
-				delete_expr(exp->callx.func);
-				for(int i = 0; i < exp->callx.args.length; ++i)
-					delete_expr(vec_get_value(&exp->callx.args, i, expr_t*));
-				vec_destroy(&exp->callx.args);
-			} break;
-			
-			case EXP_IF:
-			{
-				delete_expr(exp->ifx.cond);
-				delete_expr(exp->ifx.body);
-				if(exp->ifx.alt)
-					delete_expr(exp->ifx.alt);
-			} break;
-			
-			case EXP_WHILE:
-			{
-				delete_expr(exp->whilex.cond);
-				delete_expr(exp->whilex.body);
-			} break;
-			
-			case EXP_RETURN:
-			{
-				if(exp->retx.value)
-					delete_expr(exp->retx.value);
-			} break;
-			
-			case EXP_FUNC:
-			{
-				delete_expr(exp->funcx.body);
-			} break;
-			
-			case EXP_WRITE:
-			{
-				delete_expr(exp->write);
-			} break;
-		}
-	}
-	
-	free(exp);
-}
-
 static inline void append_code(script_t* script, word w)
 {
 	vec_push_back(&script->code, &w);
@@ -2397,23 +2424,6 @@ static void resolve_symbols(expr_t* exp)
 static char are_assignment_types_valid(expr_t* lhs, expr_t* rhs)
 {
 	return compare_type_tags(lhs->tag, rhs->tag);
-	/*
-	switch(lhs->type)
-	{
-		case EXP_VAR:
-		{
-			return compare_type_tags(lhs->tag, rhs->tag);
-		} break;
-		
-		case EXP_ARRAY_INDEX:
-		{
-			return compare_type_tags(lhs->tag->contained, rhs->tag);
-		} break;
-		
-		default: break;
-	}
-	
-	return 1;*/
 }
 
 /*static expr_t* deep_copy_expr(expr_t* exp)
@@ -2571,7 +2581,16 @@ static void finalize_type(const char* key, void* v_tag, void* data)
 				mem_copy.name = estrdup(mem->name);
 				mem_copy.index = mem->index + tag->ds.size;
 				mem_copy.type = mem->type;
-				mem_copy.default_value = mem->default_value;	// TODO: This should be deep copied orrrr
+			
+				if(mem->default_value)
+				{
+					// NOTE: Making a shallow copy of the default_value expression
+					mem_copy.default_value = emalloc(sizeof(expr_t));
+					memcpy(mem_copy.default_value, mem->default_value, sizeof(expr_t));
+					mem_copy.default_value->is_shallow_copy = 1;
+				}
+				else
+					mem_copy.default_value = NULL;
 				
 				vec_push_back(&tag->ds.members, &mem_copy);
 			}
@@ -3399,6 +3418,88 @@ void script_bind_extern(script_t* script, const char* name, script_extern_t ext)
 
 // DEFAULT EXTERNS
 
+// NOTE: Fancy compile-time externs
+#define EXT_CHECK_IF_CT(name) if(g_cur_module_index < 0) error_exit_script(script, "Attempted to call compile-time function '" name "' at runtime\n");
+
+static void ext_get_current_module_handle(script_t* script, vector_t* args)
+{
+	EXT_CHECK_IF_CT("get_current_module_handle");
+	script_push_number(script, g_cur_module_index);
+}
+
+static void ext_get_module_source_code(script_t* script, vector_t* args)
+{
+	EXT_CHECK_IF_CT("get_module_source_code");
+	
+	script_value_t* val = script_get_arg(args, 0);
+	int module_index = (int)val->number;
+	
+	script_module_t* module = vec_get(&script->modules, module_index);
+	script_push_cstr(script, module->source_code);
+	script_return_top(script);
+}
+
+static void ext_make_num_expr(script_t* script, vector_t* args)
+{
+	EXT_CHECK_IF_CT("make_num_expr");
+	
+	script_value_t* val = script_get_arg(args, 0);
+	double number = val->number;
+	
+	expr_t* exp = create_expr(EXP_NUMBER);
+	exp->number_index = register_number(script, number);
+	
+	script_push_native(script, exp, NULL, NULL);
+	script_return_top(script);
+}
+
+static void ext_make_write_expr(script_t* script, vector_t* args)
+{
+	EXT_CHECK_IF_CT("make_write_expr");
+	
+	script_value_t* val = script_get_arg(args, 0);
+	
+	expr_t* exp = create_expr(EXP_WRITE);
+	exp->write = val->nat.value;
+	
+	script_push_native(script, exp, NULL, NULL);
+	script_return_top(script); 
+}
+
+static void ext_make_call_expr(script_t* script, vector_t* args)
+{
+	EXT_CHECK_IF_CT("make_call_expr");
+	
+	script_value_t* func_val = script_get_arg(args, 0);
+	script_value_t* args_val = script_get_arg(args, 1);
+	
+	expr_t* exp = create_expr(EXP_CALL);
+	exp->callx.func = func_val->nat.value;
+	
+	for(int i = 0; i < args_val->array.length; ++i)
+	{
+		expr_t* arg_exp = vec_get_value(&args_val->array, i, expr_t*);
+		vec_push_back(&exp->callx.args, &arg_exp);
+	}
+	
+	script_push_native(script, exp, NULL, NULL);
+	script_return_top(script);
+}
+
+static void ext_add_expr_to_module(script_t* script, vector_t* args)
+{
+	EXT_CHECK_IF_CT("add_expr_to_module");
+	
+	script_value_t* mod_val = script_get_arg(args, 0);
+	script_value_t* exp_val = script_get_arg(args, 1);
+	
+	int module_index = (int)mod_val->number;
+	expr_t* exp = exp_val->nat.value;
+	
+	script_module_t* module = vec_get(&script->modules, module_index);
+	vec_push_back(&module->expr_list, &exp);
+}
+
 static void ext_make_array_of_length(script_t* script, vector_t* args)
 {
 	script_value_t* val = script_get_arg(args, 0);
@@ -3533,6 +3634,15 @@ static void ext_u8_buffer_to_string(script_t* script, vector_t* args)
 
 static void bind_default_externs(script_t* script)
 {
+	script_bind_extern(script, "get_current_module_handle", ext_get_current_module_handle);
+	script_bind_extern(script, "get_module_source_code", ext_get_module_source_code);
+	
+	script_bind_extern(script, "make_num_expr", ext_make_num_expr);
+	script_bind_extern(script, "make_write_expr", ext_make_write_expr);
+	script_bind_extern(script, "make_call_expr", ext_make_call_expr);
+	
+	script_bind_extern(script, "add_expr_to_module", ext_add_expr_to_module);
+	
 	script_bind_extern(script, "make_array_of_length", ext_make_array_of_length);
 	
 	script_bind_extern(script, "char_to_number", ext_char_to_number);
@@ -3689,11 +3799,19 @@ static void destroy_modules(void* p_module)
 	script_module_t* module = p_module;
 	free(module->local_path);
 	free(module->source_code);
+	for(int i = 0; i < module->expr_list.length; ++i)
+		delete_expr(vec_get_value(&module->expr_list, i, expr_t*));
+	vec_destroy(&module->expr_list);
+	vec_destroy(&module->compile_time_funcs);
 }
 
 void script_reset(script_t* script)
 {	
+	vec_traverse(&script->modules, destroy_modules);
+	vec_clear(&script->modules);
+	
 	destroy_all_values(script);
+	// TODO: Symbols and stuff should probably be reset too
 	
 	script->in_extern = 0;
 	
@@ -3715,9 +3833,6 @@ void script_reset(script_t* script)
 	vec_clear(&script->code);
 	
 	vec_clear(&script->function_pcs);
-	
-	vec_traverse(&script->modules, destroy_modules);
-	vec_clear(&script->modules);
 }
 
 static int read_int(script_t* script)
@@ -4023,6 +4138,12 @@ static void push_stack_frame(script_t* script, word nargs)
 
 static void pop_stack_frame(script_t* script)
 {
+	if(script->indir.length <= 0)
+	{
+		script->pc = -1;
+		return;
+	}
+	
 	// resize the stack without resetting the values
 	vec_resize(&script->stack, script->fp, NULL);
 	
@@ -4697,6 +4818,7 @@ void script_parse_code(script_t* script, const char* code, const char* module_na
 	add_module(script, module_name, code);
 		
 	script_module_t* module = vec_get(&script->modules, current_module_index);
+	g_cur_module_index = current_module_index;
 	parse_program(script, &module->expr_list);
 	module->parsed = 1;
 	
@@ -4706,7 +4828,7 @@ void script_parse_code(script_t* script, const char* code, const char* module_na
 		script_module_t* module = vec_get(&script->modules, i);
 		
 		if(!module->parsed)
-		{
+		{	
 			FILE* file = fopen(module->local_path, "rb");
 			if(!file)
 			{
@@ -4732,6 +4854,7 @@ void script_parse_code(script_t* script, const char* code, const char* module_na
 			g_file = module->local_path;
 			g_line = 1;
 			g_code = module->source_code;
+			g_cur_module_index = i;
 			
 			// NOTE: new modules *might* result
 			// in a relocation of the module values (i.e a vec_realloc call could result in the 
@@ -4778,7 +4901,42 @@ void script_compile(script_t* script)
 	for(int i = script->modules.length - 1; i >= 0; --i)
 	{
 		script_module_t* module = vec_get(&script->modules, i);
+		
 		module->start_pc = script->code.length;
+		
+		for(int i = 0; i < module->compile_time_funcs.length; ++i)
+		{
+			// NOTE: setup script for compile-time execution
+			vec_clear(&script->stack);
+			allocate_globals(script);
+			
+			// TODO: find out what functions this function references and then do that
+			expr_t* exp = vec_get_value(&module->compile_time_funcs, i, expr_t*);
+			compile_expr(script, exp);
+			
+			char prev_error = g_has_error;
+			resolve_symbols(exp);
+			symbol_error = prev_error ? 0 : g_has_error;
+			if(!symbol_error) resolve_type_tags(exp);
+		
+			//debug_expr(script, node);
+			//printf("\n");
+		
+			if(!g_has_error)
+			{
+				compile_expr(script, exp);
+			
+				printf("executing function '%s'\n", exp->funcx.decl->name);
+				script->pc = vec_get_value(&script->function_pcs, exp->funcx.decl->index, int);
+				while(script->pc >= 0)
+					execute_cycle(script);
+			}
+			else
+				error_exit("Found errors in compile-time code. Stopping compilation\n");
+		}
+		
+		vec_resize(&script->code, module->start_pc, NULL);
+		
 		for(int expr_index = 0; expr_index < module->expr_list.length; ++expr_index)
 		{
 			expr_t* node = vec_get_value(&module->expr_list, expr_index, expr_t*);
@@ -4792,13 +4950,9 @@ void script_compile(script_t* script)
 			//printf("\n");
 		
 			if(!g_has_error) compile_expr(script, node);
-			delete_expr(node);
 		}
 		
 		module->end_pc = script->code.length;
-		
-		// NOTE: module->expr_list is no longer valid after this point
-		vec_destroy(&module->expr_list);
 	}
 	
 	if(g_has_error) error_exit("Found errors in script code. Stopping compilation\n");
@@ -4814,8 +4968,11 @@ void script_dissassemble(script_t* script, FILE* out)
 void script_run(script_t* script)
 {
 	allocate_globals(script);
-	
 	vec_clear(&script->stack);
+	
+	// NOTE: making sure that compile-time externs
+	// cannot be called at this point
+	g_cur_module_index = -1;
 	
 	script->pc = 0;
 	while(script->pc >= 0)
@@ -4961,8 +5118,13 @@ void script_debug(script_t* script, script_debug_env_t* env)
 			script_dissassemble(script, stdout);
 		else if(strcmp(input, "step") == 0)
 		{
-			if(script_running)
-				execute_cycle(script);
+			if(script_running && script->pc >= 0 && script->pc < script->code.length)
+			{
+				int start_line = script->cur_line;
+				const char* start_file = script->cur_file;
+				while(script->cur_line == start_line && strcmp(script->cur_file, start_file))
+					execute_cycle(script);
+			}
 			else
 				fprintf(stderr, "Cannot step; script is not running\n");
 		}
@@ -5062,6 +5224,9 @@ static void destroy_cstring(void* p_str)
 
 void script_destroy(script_t* script)
 {
+	vec_traverse(&script->modules, destroy_modules);
+	vec_destroy(&script->modules);
+	
 	destroy_type_tags();
 	destroy_symbols();
 	
@@ -5088,7 +5253,4 @@ void script_destroy(script_t* script)
 	vec_destroy(&script->function_names);
 	
 	vec_destroy(&script->function_pcs);
-	
-	vec_traverse(&script->modules, destroy_modules);
-	vec_destroy(&script->modules);
 }

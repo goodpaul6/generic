@@ -1,22 +1,14 @@
 TODO:
-- write a function called script_debug which provides
-  a command line debugging system for script_t
-  
-  typedef struct script_debug_env
-  {
-	vector_t breakpoints;
-  } script_debug_env_t;
- 
-  typedef struct script_debug_breakpoint
-  {
-	int pc; // if this is known ofc (not of user-level use)
-	struct
+-	extern get_expr_type(native) : string
+	
+	// this function will be called prior to the compilation
+	// of this module and you can mess around with the types and
+	// parsed expressions
+	#on_compile func process_module(mod : module)
 	{
-		const char* file;	// If this is null, then any file works
-		int line;			// If this is -1, then no break occurs
+		
 	}
-  } script_debug_breakpoint_t;
- 
+	
 - instead of 'error_exit'ing just have the user set an 'error callback function' and
   return a char from the script_* functions as to whether the operation was successful
   

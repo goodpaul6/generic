@@ -1,0 +1,5 @@
+struct module
+{
+	source_code : string
+	local_path : string
+}

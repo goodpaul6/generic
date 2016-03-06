@@ -1,3 +1,20 @@
-var x : number = 10
-var y : number = 20
-var z : number = x + y
+#import "basic.txt"
+
+extern get_current_module_handle() : number
+extern get_module_source_code(number) : string
+extern add_expr_to_module(number, native) : void
+
+extern make_num_expr(number) : native
+extern make_write_expr(native) : native
+
+#on_compile func on_compile() : void
+{
+	var module_handle : number = get_current_module_handle()
+	
+	var i : number = 0
+	while i < 20
+	{
+		add_expr_to_module(module_handle, make_write_expr(make_num_expr(i)))
+		i = i + 1
+	}
+}
