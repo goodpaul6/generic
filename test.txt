@@ -13,7 +13,7 @@ extern get_current_module_index() : number
 extern get_module_source_code(number) : string
 extern get_module_expr_list(number) : array-native
 
-extern get_expr_type(native) : number
+extern get_expr_kind(native) : number
 
 extern add_expr_to_module(number, native) : void
 extern insert_expr_into_module(number, native, number) : void
@@ -45,7 +45,7 @@ extern get_func_expr_decl(native) : native
 		var exp : native = expr_list[i]
 		
 		// if the expression is a function
-		if get_expr_type(exp) == 23
+		if get_expr_kind(exp) == 23
 		{
 		}
 	

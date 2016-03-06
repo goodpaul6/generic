@@ -3470,9 +3470,9 @@ static void ext_get_module_expr_list(script_t* script, vector_t* args)
 	script_return_top(script);
 }
 
-static void ext_get_expr_type(script_t* script, vector_t* args)
+static void ext_get_expr_kind(script_t* script, vector_t* args)
 {
-	EXT_CHECK_IF_CT("get_expr_type");
+	EXT_CHECK_IF_CT("get_expr_kind");
 	
 	script_value_t* exp_val = script_get_arg(args, 0);
 	expr_t* exp = exp_val->nat.value;
@@ -3923,7 +3923,7 @@ static void bind_default_externs(script_t* script)
 	script_bind_extern(script, "get_module_source_code", ext_get_module_source_code);
 	script_bind_extern(script, "get_module_expr_list", ext_get_module_expr_list);
 	
-	script_bind_extern(script, "get_expr_type", ext_get_expr_type);
+	script_bind_extern(script, "get_expr_kind", ext_get_expr_kind);
 	
 	script_bind_extern(script, "create_bool_type", ext_create_bool_type);
 	script_bind_extern(script, "create_char_type", ext_create_char_type);
