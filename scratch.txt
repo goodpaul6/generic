@@ -1,4 +1,6 @@
 TODO:
+- there should be some context set for expressions generated in compile-time functions
+
 - context_t should contain the index of the module which the expression
   exists in (and then use this info to check if the module of the things
   being referenced in the compile-time functions are actually a part of

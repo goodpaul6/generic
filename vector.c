@@ -131,7 +131,7 @@ void vec_insert(vector_t* vector, void* object, size_t index)
 		vec_realloc(vector);
 	}
 	
-	memmove(&vector->data[(index + 1) * vector->datum_size], &vector->data[index * vector->datum_size], (vector->length - index - 1) * vector->datum_size);
+	memmove(&vector->data[(index + 1) * vector->datum_size], &vector->data[index * vector->datum_size], (vector->length - index) * vector->datum_size);
 	memcpy(&vector->data[index * vector->datum_size], object, vector->datum_size);
 	vector->length += 1;
 }

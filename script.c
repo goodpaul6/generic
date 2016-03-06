@@ -728,6 +728,7 @@ static type_tag_t* create_type_tag(tag_t type)
 	
 	tag->ctx.file = g_file;
 	tag->ctx.line = g_line;
+	tag->ctx.scope = g_scope;
 	
 	tag->type = type;
 	
@@ -3423,9 +3424,9 @@ void script_bind_extern(script_t* script, const char* name, script_extern_t ext)
 // NOTE: Fancy compile-time externs
 #define EXT_CHECK_IF_CT(name) if(g_cur_module_index < 0) error_exit_script(script, "Attempted to call compile-time function '" name "' at runtime\n");
 
-static void ext_get_current_module_handle(script_t* script, vector_t* args)
+static void ext_get_current_module_index(script_t* script, vector_t* args)
 {
-	EXT_CHECK_IF_CT("get_current_module_handle");
+	EXT_CHECK_IF_CT("get_current_module_index");
 	script_push_number(script, g_cur_module_index);
 }
 
@@ -3494,6 +3495,20 @@ static void ext_make_num_expr(script_t* script, vector_t* args)
 	script_return_top(script);
 }
 
+static void ext_make_string_expr(script_t* script, vector_t* args)
+{
+	EXT_CHECK_IF_CT("make_num_expr");
+	
+	script_value_t* val = script_get_arg(args, 0);
+	const char* string = val->string.data;
+	
+	expr_t* exp = create_expr(EXP_STRING);
+	exp->string_index = register_string(script, string);
+	
+	script_push_native(script, exp, NULL, NULL);
+	script_return_top(script);
+}
+
 static void ext_make_write_expr(script_t* script, vector_t* args)
 {
 	EXT_CHECK_IF_CT("make_write_expr");
@@ -3507,17 +3522,87 @@ static void ext_make_write_expr(script_t* script, vector_t* args)
 	script_return_top(script); 
 }
 
-static void ext_get_type_tag_from_name(script_t* script, vector_t* args)
+static void ext_create_bool_type(script_t* script, vector_t* args)
 {
-	EXT_CHECK_IF_CT("get_type_tag_from_name");
+	EXT_CHECK_IF_CT("create_bool_type");
 	
-	script_value_t* name_val = script_get_arg(args, 0);
-	const char* name = name_val->string.data;
+	script_push_native(script, create_type_tag(TAG_BOOL), NULL, NULL);
+	script_return_top(script);
+}
+
+static void ext_create_char_type(script_t* script, vector_t* args)
+{
+	EXT_CHECK_IF_CT("create_char_type");
 	
-	type_tag_t* tag = get_type_tag_from_name(name);
+	script_push_native(script, create_type_tag(TAG_CHAR), NULL, NULL);
+	script_return_top(script);
+}
+
+static void ext_create_number_type(script_t* script, vector_t* args)
+{
+	EXT_CHECK_IF_CT("create_number_type");
+	
+	script_push_native(script, create_type_tag(TAG_NUMBER), NULL, NULL);
+	script_return_top(script);
+}
+
+static void ext_create_string_type(script_t* script, vector_t* args)
+{
+	EXT_CHECK_IF_CT("create_string_type");
+	
+	script_push_native(script, create_type_tag(TAG_STRING), NULL, NULL);
+	script_return_top(script);
+}
+
+static void ext_create_array_type(script_t* script, vector_t* args)
+{
+	EXT_CHECK_IF_CT("create_array_type");
+	
+	script_value_t* contained_val = script_get_arg(args, 0);
+	type_tag_t* contained = contained_val->nat.value;
+	
+	type_tag_t* array = create_type_tag(TAG_ARRAY);
+	array->contained = contained;
+	
+	script_push_native(script, array, NULL, NULL);
+	script_return_top(script);
+}
+
+static void ext_create_function_type(script_t* script, vector_t* args)
+{
+	EXT_CHECK_IF_CT("create_function_type");
+	
+	script_value_t* return_type_val = script_get_arg(args, 0);
+	script_value_t* arg_types_val = script_get_arg(args, 1);
+	
+	type_tag_t* tag = create_type_tag(TAG_FUNC);
+	tag->func.return_type = return_type_val->nat.value;
+	for(int i = 0; i < arg_types_val->array.length; ++i)
+	{
+		script_value_t* arg_type_val = vec_get_value(&arg_types_val->array, i, script_value_t*);
+		type_tag_t* arg_tag = arg_type_val->nat.value;
+		
+		vec_push_back(&tag->func.arg_types, &arg_tag);
+	}
 	
 	script_push_native(script, tag, NULL, NULL);
-	script_return_top(script); 
+	script_return_top(script);
+}
+
+static void ext_create_native_type(script_t* script, vector_t* args)
+{
+	EXT_CHECK_IF_CT("create_native_type");
+		
+	script_push_native(script, create_type_tag(TAG_NATIVE), NULL, NULL);
+	script_return_top(script);
+}
+
+static void ext_create_void_type(script_t* script, vector_t* args)
+{
+	EXT_CHECK_IF_CT("create_void_type");
+	
+	script_push_native(script, create_type_tag(TAG_VOID), NULL, NULL);
+	script_return_top(script);
 }
 
 static void ext_reference_func(script_t* script, vector_t* args)
@@ -3532,6 +3617,17 @@ static void ext_reference_func(script_t* script, vector_t* args)
 		script_push_native(script, decl, NULL, NULL);
 	else
 		script_push_null(script);
+	script_return_top(script);
+}
+
+static void ext_get_func_decl_name(script_t* script, vector_t* args)
+{
+	EXT_CHECK_IF_CT("get_func_decl_name");
+	
+	script_value_t* decl_val = script_get_arg(args, 0);
+	func_decl_t* decl = decl_val->nat.value;
+	
+	script_push_cstr(script, decl->name);
 	script_return_top(script);
 }
 
@@ -3646,6 +3742,19 @@ static void ext_make_call_expr(script_t* script, vector_t* args)
 	script_return_top(script);
 }
 
+static void ext_get_func_expr_decl(script_t* script, vector_t* args)
+{
+	EXT_CHECK_IF_CT("get_func_expr_decl");
+	
+	script_value_t* exp_val = script_get_arg(args, 0);
+	expr_t* exp = exp_val->nat.value;
+	
+	if(exp->type != EXP_FUNC) error_exit_script(script, "Passed non-func expression into 'get_func_expr_decl'\n");
+	
+	script_push_native(script, exp->funcx.decl, NULL, NULL);
+	script_return_top(script);
+}
+
 static void ext_add_expr_to_module(script_t* script, vector_t* args)
 {
 	EXT_CHECK_IF_CT("add_expr_to_module");
@@ -3673,7 +3782,7 @@ static void ext_insert_expr_into_module(script_t* script, vector_t* args)
 	int location = (int)loc_val->number;
 	
 	script_module_t* module = vec_get(&script->modules, module_index);
-	vec_insert(&module->expr_list, exp, location);
+	vec_insert(&module->expr_list, &exp, location);
 }
 
 static void ext_make_array_of_length(script_t* script, vector_t* args)
@@ -3810,22 +3919,34 @@ static void ext_u8_buffer_to_string(script_t* script, vector_t* args)
 
 static void bind_default_externs(script_t* script)
 {
-	script_bind_extern(script, "get_current_module_handle", ext_get_current_module_handle);
+	script_bind_extern(script, "get_current_module_index", ext_get_current_module_index);
 	script_bind_extern(script, "get_module_source_code", ext_get_module_source_code);
 	script_bind_extern(script, "get_module_expr_list", ext_get_module_expr_list);
 	
 	script_bind_extern(script, "get_expr_type", ext_get_expr_type);
 	
-	script_bind_extern(script, "get_type_tag_from_name", ext_get_type_tag_from_name);
+	script_bind_extern(script, "create_bool_type", ext_create_bool_type);
+	script_bind_extern(script, "create_char_type", ext_create_char_type);
+	script_bind_extern(script, "create_number_type", ext_create_number_type);
+	script_bind_extern(script, "create_string_type", ext_create_string_type);
+	script_bind_extern(script, "create_function_type", ext_create_function_type);
+	script_bind_extern(script, "create_array_type", ext_create_array_type);
+	script_bind_extern(script, "create_native_type", ext_create_native_type);
+	script_bind_extern(script, "create_void_type", ext_create_void_type);
+	
 	script_bind_extern(script, "reference_function", ext_reference_func);
+	script_bind_extern(script, "get_func_decl_name", ext_get_func_decl_name);
 	script_bind_extern(script, "declare_variable", ext_declare_variable);
 	script_bind_extern(script, "reference_variable", ext_reference_variable);
 	
 	script_bind_extern(script, "make_num_expr", ext_make_num_expr);
+	script_bind_extern(script, "make_string_expr", ext_make_string_expr);
 	script_bind_extern(script, "make_var_expr", ext_make_var_expr);
 	script_bind_extern(script, "make_write_expr", ext_make_write_expr);
 	script_bind_extern(script, "make_bin_expr", ext_make_bin_expr);
 	script_bind_extern(script, "make_call_expr", ext_make_call_expr);
+	
+	script_bind_extern(script, "get_func_expr_decl", ext_get_func_expr_decl);
 	
 	script_bind_extern(script, "add_expr_to_module", ext_add_expr_to_module);
 	script_bind_extern(script, "insert_expr_into_module", ext_insert_expr_into_module);
