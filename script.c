@@ -19,6 +19,7 @@ typedef struct
 {
 	int line;
 	const char* file;
+	int scope;
 } context_t;
 
 typedef enum
@@ -1344,6 +1345,7 @@ static expr_t* create_expr(expr_type_t type)
 	exp->tag = NULL;
 	exp->ctx.file = g_file;
 	exp->ctx.line = g_line;
+	exp->ctx.scope = g_scope;
 	exp->type = type;
 	
 	return exp;
@@ -3439,6 +3441,45 @@ static void ext_get_module_source_code(script_t* script, vector_t* args)
 	script_return_top(script);
 }
 
+static script_value_t* new_value(script_t* script, script_value_type_t type);
+static void ext_get_module_expr_list(script_t* script, vector_t* args)
+{
+	EXT_CHECK_IF_CT("get_module_expr_list");
+	
+	script_value_t* val = script_get_arg(args, 0);
+	int module_index = (int)val->number;
+	
+	script_module_t* module = vec_get(&script->modules, module_index);
+	vector_t expr_list;
+
+	vec_init(&expr_list, sizeof(script_value_t*));	
+	
+	for(int i = 0; i < module->expr_list.length; ++i)
+	{
+		// TODO: make script_create_native, et al and use those instead
+		script_value_t* exp_val = new_value(script, VAL_NATIVE);
+		
+		exp_val->nat.value = vec_get_value(&module->expr_list, i, expr_t*);
+		exp_val->nat.on_mark = exp_val->nat.on_delete = NULL;
+		
+		vec_push_back(&expr_list, &exp_val); 
+	}
+
+	script_push_premade_array(script, expr_list);
+	script_return_top(script);
+}
+
+static void ext_get_expr_type(script_t* script, vector_t* args)
+{
+	EXT_CHECK_IF_CT("get_expr_type");
+	
+	script_value_t* exp_val = script_get_arg(args, 0);
+	expr_t* exp = exp_val->nat.value;
+	
+	script_push_number(script, exp->type);
+	script_return_top(script);
+}
+
 static void ext_make_num_expr(script_t* script, vector_t* args)
 {
 	EXT_CHECK_IF_CT("make_num_expr");
@@ -3464,6 +3505,125 @@ static void ext_make_write_expr(script_t* script, vector_t* args)
 	
 	script_push_native(script, exp, NULL, NULL);
 	script_return_top(script); 
+}
+
+static void ext_get_type_tag_from_name(script_t* script, vector_t* args)
+{
+	EXT_CHECK_IF_CT("get_type_tag_from_name");
+	
+	script_value_t* name_val = script_get_arg(args, 0);
+	const char* name = name_val->string.data;
+	
+	type_tag_t* tag = get_type_tag_from_name(name);
+	
+	script_push_native(script, tag, NULL, NULL);
+	script_return_top(script); 
+}
+
+static void ext_reference_func(script_t* script, vector_t* args)
+{
+	EXT_CHECK_IF_CT("reference_func");
+	
+	script_value_t* name_val = script_get_arg(args, 0);
+	const char* name = name_val->string.data;
+	
+	func_decl_t* decl = reference_function(name);
+	if(decl)
+		script_push_native(script, decl, NULL, NULL);
+	else
+		script_push_null(script);
+	script_return_top(script);
+}
+
+static void ext_declare_variable(script_t* script, vector_t* args)
+{
+	EXT_CHECK_IF_CT("declare_variable");
+	
+	script_value_t* name_val = script_get_arg(args, 0);
+	script_value_t* type_val = script_get_arg(args, 1);
+	script_value_t* func_decl_val = script_get_arg(args, 2);
+	script_value_t* scope_val = script_get_arg(args, 3);
+	
+	const char* name = name_val->string.data;
+	type_tag_t* tag = type_val->nat.value;
+	func_decl_t* decl = NULL;
+	int scope = 0;
+	
+	if(func_decl_val->type != VAL_NULL)
+	{
+		decl = func_decl_val->nat.value;
+		scope = (int)scope_val->number;
+	}
+
+	g_cur_func = decl;
+	g_scope = scope;
+	
+	script_push_native(script, declare_variable(name, tag), NULL, NULL);
+	script_return_top(script);
+}
+
+static void ext_reference_variable(script_t* script, vector_t* args)
+{
+	EXT_CHECK_IF_CT("reference_variable");
+	
+	script_value_t* name_val = script_get_arg(args, 0);
+	script_value_t* func_decl_val = script_get_arg(args, 2);
+	script_value_t* scope_val = script_get_arg(args, 3);
+	
+	const char* name = name_val->string.data;
+	func_decl_t* decl = NULL;
+	int scope = 0;
+	
+	if(func_decl_val->type != VAL_NULL)
+	{
+		decl = func_decl_val->nat.value;
+		scope = (int)scope_val->number;
+	}
+
+	g_cur_func = decl;
+	g_scope = scope;
+	
+	script_push_native(script, reference_variable(name), NULL, NULL);
+	script_return_top(script);
+}
+
+static void ext_make_var_expr(script_t* script, vector_t* args)
+{
+	EXT_CHECK_IF_CT("make_var_expr");
+	
+	script_value_t* decl_val = script_get_arg(args, 0);
+	var_decl_t* decl = decl_val->nat.value;
+	
+	expr_t* exp = create_expr(EXP_VAR);
+	
+	exp->varx.decl = decl;
+	exp->varx.name = estrdup(decl->name);
+	
+	script_push_native(script, exp, NULL, NULL);
+	script_return_top(script);
+}
+
+static void ext_make_bin_expr(script_t* script, vector_t* args)
+{
+	EXT_CHECK_IF_CT("make_bin_expr");
+	
+	script_value_t* lhs_val = script_get_arg(args, 0);
+	script_value_t* rhs_val = script_get_arg(args, 1);
+	script_value_t* op_val = script_get_arg(args, 2);
+
+	expr_t* lhs = lhs_val->nat.value;
+	expr_t* rhs = rhs_val->nat.value;
+	const char* op = op_val->string.data;
+	
+	expr_t* exp = create_expr(EXP_BINARY);
+	exp->binx.lhs = lhs;
+	exp->binx.rhs = rhs;
+	
+	if(strcmp(op, "=") == 0) exp->binx.op = TOK_ASSIGN;
+	else error_exit_script(script, "Invalid operator '%s' given to 'make_bin_expr'\n", op);
+	
+	script_push_native(script, exp, NULL, NULL);
+	script_return_top(script);
 }
 
 static void ext_make_call_expr(script_t* script, vector_t* args)
@@ -3498,6 +3658,22 @@ static void ext_add_expr_to_module(script_t* script, vector_t* args)
 	
 	script_module_t* module = vec_get(&script->modules, module_index);
 	vec_push_back(&module->expr_list, &exp);
+}
+
+static void ext_insert_expr_into_module(script_t* script, vector_t* args)
+{
+	EXT_CHECK_IF_CT("insert_expr_into_module");
+	
+	script_value_t* mod_val = script_get_arg(args, 0);
+	script_value_t* exp_val = script_get_arg(args, 1);
+	script_value_t* loc_val = script_get_arg(args, 2);
+	
+	int module_index = (int)mod_val->number;
+	expr_t* exp = exp_val->nat.value;
+	int location = (int)loc_val->number;
+	
+	script_module_t* module = vec_get(&script->modules, module_index);
+	vec_insert(&module->expr_list, exp, location);
 }
 
 static void ext_make_array_of_length(script_t* script, vector_t* args)
@@ -3636,12 +3812,23 @@ static void bind_default_externs(script_t* script)
 {
 	script_bind_extern(script, "get_current_module_handle", ext_get_current_module_handle);
 	script_bind_extern(script, "get_module_source_code", ext_get_module_source_code);
+	script_bind_extern(script, "get_module_expr_list", ext_get_module_expr_list);
+	
+	script_bind_extern(script, "get_expr_type", ext_get_expr_type);
+	
+	script_bind_extern(script, "get_type_tag_from_name", ext_get_type_tag_from_name);
+	script_bind_extern(script, "reference_function", ext_reference_func);
+	script_bind_extern(script, "declare_variable", ext_declare_variable);
+	script_bind_extern(script, "reference_variable", ext_reference_variable);
 	
 	script_bind_extern(script, "make_num_expr", ext_make_num_expr);
+	script_bind_extern(script, "make_var_expr", ext_make_var_expr);
 	script_bind_extern(script, "make_write_expr", ext_make_write_expr);
+	script_bind_extern(script, "make_bin_expr", ext_make_bin_expr);
 	script_bind_extern(script, "make_call_expr", ext_make_call_expr);
 	
 	script_bind_extern(script, "add_expr_to_module", ext_add_expr_to_module);
+	script_bind_extern(script, "insert_expr_into_module", ext_insert_expr_into_module);
 	
 	script_bind_extern(script, "make_array_of_length", ext_make_array_of_length);
 	
@@ -4874,9 +5061,6 @@ void script_parse_code(script_t* script, const char* code, const char* module_na
 		}
 	}
 	
-	check_all_tags_defined();
-	finalize_types();
-	
 	if(g_has_error) error_exit("Found errors in script code. Stopping compilation\n");
 }
 
@@ -4904,15 +5088,20 @@ void script_compile(script_t* script)
 		
 		module->start_pc = script->code.length;
 		
+		// NOTE: this happens twice, once before and once after
+		check_all_tags_defined();
+		finalize_types();
+		
+		// TODO: check all the types and definitions on this functions
+		// and the types they reference
 		for(int i = 0; i < module->compile_time_funcs.length; ++i)
 		{
 			// NOTE: setup script for compile-time execution
 			vec_clear(&script->stack);
 			allocate_globals(script);
-			
+
 			// TODO: find out what functions this function references and then do that
-			expr_t* exp = vec_get_value(&module->compile_time_funcs, i, expr_t*);
-			compile_expr(script, exp);
+			expr_t* exp = vec_get_value(&module->compile_time_funcs, i, expr_t*);		
 			
 			char prev_error = g_has_error;
 			resolve_symbols(exp);
@@ -4936,6 +5125,9 @@ void script_compile(script_t* script)
 		}
 		
 		vec_resize(&script->code, module->start_pc, NULL);
+
+		check_all_tags_defined();
+		finalize_types();
 		
 		for(int expr_index = 0; expr_index < module->expr_list.length; ++expr_index)
 		{
