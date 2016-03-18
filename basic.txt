@@ -1,5 +1,58 @@
-struct module
+extern create_u8_buffer() : native
+extern u8_buffer_push(native, number) : void
+extern u8_buffer_to_string(native) : string
+extern floor(number) : number
+extern char_to_number(char) : number
+extern number_to_string(number) : string
+
+func format_string(fmt : string, args : array-dynamic) : string
 {
-	source_code : string
-	local_path : string
+	var buf : native = create_u8_buffer()
+
+	var i : number = 0
+	var arg : number = 0
+	
+	while i < len fmt
+	{
+		var c : char = fmt[i]
+		if c == '%'
+		{
+			i = i + 1
+			c = fmt[i]
+			
+			if c == 's'
+			{
+				var str : string = args[arg]
+				var length : number = len str
+				var str_index : number = 0
+				
+				while str_index < length
+				{
+					u8_buffer_push(buf, char_to_number(str[str_index])) 
+					str_index = str_index + 1
+				}
+			}
+			else if c == 'd'
+			{
+				var num : number = args[arg]
+				var str : string = number_to_string(num)
+				
+				var length : number = len str
+				var str_index : number = 0
+				
+				while str_index < length
+				{
+					u8_buffer_push(buf, char_to_number(str[str_index]))
+					str_index = str_index + 1
+				}
+			}
+			
+			arg = arg + 1
+		}
+		else
+			u8_buffer_push(buf, char_to_number(c))
+		i = i + 1
+	}
+	
+	return u8_buffer_to_string(buf)
 }

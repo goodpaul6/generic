@@ -1,0 +1,36 @@
+extern make_array_of_length(number) : array-dynamic
+
+extern create_bool_type() : native
+extern create_char_type() : native
+extern create_number_type() : native
+extern create_string_type() : native
+extern create_function_type(native, array-native) : native
+extern create_array_type(native) : native
+extern create_native_type() : native
+extern create_dynamic_type() : native
+extern create_void_type() : native
+
+extern get_current_module_index() : number
+extern get_module_source_code(number) : string
+extern get_module_expr_list(number) : array-native
+
+extern get_expr_kind(native) : number
+
+extern add_expr_to_module(number, native) : void
+extern insert_expr_into_module(number, native, number) : void
+
+extern reference_function(string) : native
+extern get_func_decl_name(native) : string
+extern declare_variable(string, native, native, number) : native
+extern reference_variable(string, native, number) : native
+
+extern make_num_expr(number) : native
+extern make_string_expr(string) : native
+extern make_var_expr(native) : native
+extern make_undeclared_var_expr(string) : native
+extern make_bin_expr(native, native, string) : native
+extern make_write_expr(native) : native
+extern make_call_expr(native, array-native) : native
+extern make_array_index_expr(native, native) : native
+
+extern get_func_expr_decl(native) : native

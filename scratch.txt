@@ -1,4 +1,6 @@
 TODO:
+- OMG warnings should have better location information somehow (ex. WARN_ARRAY_DYNAMIC_TO_SPECIFIC)
+
 - there should be some context set for expressions generated in compile-time functions
 
 - context_t should contain the index of the module which the expression
@@ -60,7 +62,8 @@ NOTES:
 - 'using' in structs adds members to the *end* of the struct, never the beginning, regardless of where it appears inside the struct decl		
 
 ISSUES:
-- Default value expressions will leak (they won't be deleted)
+- running the vm 100000 times causes some double frees and unaddressable accesses
+
 - Discrepancy in function syntax using ':'
 
 	exhibit A:

@@ -43,6 +43,7 @@ typedef struct type_tag
 	context_t ctx;
 	tag_t type;
 	char defined;
+	char finalized;
 	
 	union
 	{
@@ -424,16 +425,65 @@ static int g_cur_tok = 0;
 static int g_scope = 0;
 static vector_t g_globals;
 static vector_t g_functions;
-static int g_num_functions = 0;
 static func_decl_t* g_cur_func = NULL;
 static hashmap_t g_user_type_tags;
 static vector_t g_all_type_tags;
 static char g_has_error = 0;
-static int g_cur_module_index = NULL;
+static int g_cur_module_index = 0;
+
+typedef enum
+{
+	WARN_DYNAMIC_ARRAY_LITERAL,
+	WARN_ARRAY_DYNAMIC_TO_SPECIFIC,
+	WARN_CALL_DYNAMIC,
+	NUM_WARNINGS
+} warning_t;
+
+static char g_warning_disabled[NUM_WARNINGS] = {0};
+static const char* g_warning_name[NUM_WARNINGS] = {
+	"dynamic_array_literal",
+	"array_dynamic_to_specific",
+	"call_dynamic"
+};
+static const char* g_warning_format[NUM_WARNINGS] = {
+	"Contained type of array literal is not uniform across the literal; defaulting to dynamic.",
+	"Treating array-dynamic as an array of a specified type; this is totally not type safe.",
+	"Calling value of type dynamic; if you don't know whether this is a function, don't do it."
+};
 
 // NOTE: Used for file and line debug info optimization
 static int g_last_compiled_line = 0;
 static const char* g_last_compiled_file = NULL;
+
+static void warn_c(context_t ctx, warning_t warning, ...)
+{
+	if(!g_warning_disabled[(int)warning])
+	{
+		fprintf(stderr, "\nWarning %s (%s:%i):\n", g_warning_name[(int)warning], ctx.file, ctx.line);
+	
+		va_list args;
+		va_start(args, warning);
+		vfprintf(stderr, g_warning_format[(int)warning], args);
+		va_end(args);
+		
+		fprintf(stderr, "\n");
+	}
+}
+
+static void warn_e(expr_t* exp, warning_t warning, ...)
+{
+	if(!g_warning_disabled[(int)warning])
+	{
+		fprintf(stderr, "\nWarning %s (%s:%i):\n", g_warning_name[(int)warning], exp->ctx.file, exp->ctx.line);
+	
+		va_list args;
+		va_start(args, warning);
+		vfprintf(stderr, g_warning_format[(int)warning], args);
+		va_end(args);
+		
+		fprintf(stderr, "\n");
+	}
+}
 
 static void error_exit(const char* fmt, ...)
 {
@@ -725,6 +775,7 @@ static type_tag_t* create_type_tag(tag_t type)
 	type_tag_t* tag = emalloc(sizeof(type_tag_t)); 
 	
 	tag->defined = 1;
+	tag->finalized = 0;
 	
 	tag->ctx.file = g_file;
 	tag->ctx.line = g_line;
@@ -815,6 +866,15 @@ static char compare_type_tags(type_tag_t* a, type_tag_t* b)
 		
 		case TAG_ARRAY:
 		{
+			if(a->contained->type == TAG_DYNAMIC || b->contained->type == TAG_DYNAMIC)
+			{
+				context_t ctx;
+				ctx.file = g_file;
+				ctx.line = g_line;
+				
+				warn_c(ctx, WARN_ARRAY_DYNAMIC_TO_SPECIFIC);
+			}
+			
 			if(!compare_type_tags(a->contained, b->contained)) return 0;
 		} break;
 		
@@ -961,26 +1021,35 @@ static void reset_symbols()
 	vec_clear(&g_functions);
 }
 
+static var_decl_t* reference_variable(const char* name);
 static var_decl_t* declare_variable(const char* name, type_tag_t* tag)
 {
-	var_decl_t* decl = emalloc(sizeof(type_tag_t));
+	var_decl_t* decl = reference_variable(name);
 	
-	decl->parent = g_cur_func;
-	decl->tag = tag;
-	decl->name = estrdup(name);
-	decl->scope = g_scope;
-	
-	if(g_cur_func)
+	if(!decl)
 	{
-		decl->index = g_cur_func->locals.length;
+		decl = emalloc(sizeof(type_tag_t));
 		
-		vec_push_back(&g_cur_func->locals, &decl);
+		decl->parent = g_cur_func;
+		decl->tag = tag;
+		decl->name = estrdup(name);
+		decl->scope = g_scope;
+		
+		if(g_cur_func)
+		{
+			decl->index = g_cur_func->locals.length;			
+			vec_push_back(&g_cur_func->locals, &decl);
+			return decl;
+		}
+	
+		decl->index = g_globals.length;
+		
+		vec_push_back(&g_globals, &decl);
 		return decl;
 	}
+	else if(!g_cur_func)
+		error_exit_p("Attempted to redeclare global variable '%s'\n", name);
 	
-	decl->index = g_globals.length;
-	
-	vec_push_back(&g_globals, &decl);
 	return decl;
 }
 
@@ -1000,6 +1069,24 @@ static var_decl_t* declare_argument(const char* name, type_tag_t* tag)
 	
 	vec_push_back(&g_cur_func->args, &decl);
 	return decl;
+}
+
+static void enter_scope()
+{
+	++g_scope;
+}
+
+static void exit_scope()
+{
+	if(g_cur_func)
+	{		
+		for(int i = 0; i < g_cur_func->locals.length; ++i)
+		{
+			var_decl_t* decl = vec_get_value(&g_cur_func->locals, i, var_decl_t*);
+			if(decl->scope == g_scope) decl->scope = -1;	// NOTE: can no longer access this variable because we exited this scope
+		}
+	}
+	--g_scope;
 }
 
 static var_decl_t* reference_variable(const char* name)
@@ -1031,7 +1118,7 @@ static var_decl_t* reference_variable(const char* name)
 	return NULL;
 }
 
-static func_decl_t* declare_function(const char* name)
+static func_decl_t* declare_function(script_t* script, const char* name)
 {
 	func_decl_t* decl = emalloc(sizeof(func_decl_t));
 	
@@ -1043,7 +1130,14 @@ static func_decl_t* declare_function(const char* name)
 	vec_init(&decl->locals, sizeof(var_decl_t*));
 	vec_init(&decl->args, sizeof(var_decl_t*));
 
-	decl->index = g_num_functions++;
+	decl->index = script->function_names.length;
+	
+	char* dup_name = estrdup(name);
+	vec_push_back(&script->function_names, &dup_name);
+	
+	int undef_pc = -1;
+	vec_push_back(&script->function_pcs, &undef_pc);
+	
 	decl->has_return = 0;
 
 	vec_push_back(&g_functions, &decl);
@@ -1510,13 +1604,13 @@ static expr_t* parse_block(script_t* script)
 	vector_t block;
 	vec_init(&block, sizeof(expr_t*));
 	
-	++g_scope;
+	enter_scope();
 	while(g_cur_tok != TOK_CLOSECURLY)
 	{
 		expr_t* e = parse_expr(script);
 		vec_push_back(&block, &e);
 	}
-	--g_scope;
+	exit_scope();
 	
 	get_next_token();
 	
@@ -1648,7 +1742,7 @@ static expr_t* parse_func(script_t* script)
 	
 	get_next_token();
 	
-	exp->funcx.decl = declare_function(name);
+	exp->funcx.decl = declare_function(script, name);
 	enter_function(exp->funcx.decl);
 	
 	if(g_cur_tok != TOK_OPENPAREN) error_exit_p("Expected '(' after func %s\n", name);
@@ -1744,7 +1838,7 @@ static expr_t* parse_struct(script_t* script)
 			sprintf(buf, "%s_%s", tag->ds.name, name); 
 			buf[length - 1] = '\0';
 			
-			func_decl_t* decl = declare_function(buf);
+			func_decl_t* decl = declare_function(script, buf);
 			enter_function(decl);
 			
 			if(!is_static)
@@ -2568,7 +2662,7 @@ static char are_assignment_types_valid(expr_t* lhs, expr_t* rhs)
 static void finalize_type(const char* key, void* v_tag, void* data)
 {
 	type_tag_t* tag = v_tag;
-	if(tag->defined)
+	if(tag->defined && !tag->finalized)
 	{
 		if(tag->type != TAG_STRUCT) error_exit_c(tag->ctx, "Attempted to use non-struct type in struct '%s'\n", tag->ds.name);
 		
@@ -2600,6 +2694,8 @@ static void finalize_type(const char* key, void* v_tag, void* data)
 			
 			tag->ds.size += using->ds.size;
 		}
+		
+		tag->finalized = 1;
 	}
 }
 
@@ -2610,11 +2706,17 @@ static void finalize_types()
 	map_traverse(&g_user_type_tags, finalize_type, NULL);  
 }
 
+static int get_struct_type_member_index(type_tag_t* tag, const char* name, char* is_function);
 // TODO: Add type names to error messages
 // NOTE: resolve_symbols before this
 static void resolve_type_tags(void* vexp)
 {
 	expr_t* exp = vexp;
+	
+	// NOTE: Pathetic attempt at providing proper
+	// line information for type warnings
+	g_file = exp->ctx.file;
+	g_line = exp->ctx.line;
 	
 	switch(exp->type)
 	{
@@ -2675,7 +2777,7 @@ static void resolve_type_tags(void* vexp)
 				{	
 					resolve_type_tags(mem->default_value);
 					if(!compare_type_tags(mem->type, mem->default_value->tag))
-						error_defer_e(mem->default_value, "Type of default value does not match type of member variable\n");
+						error_defer_e(mem->default_value, "Type of default value does not match type of member variable '%s'\n", mem->name);
 				}
 			}
 			
@@ -2689,6 +2791,22 @@ static void resolve_type_tags(void* vexp)
 		case EXP_STRUCT_NEW:
 		{
 			exp->tag = exp->newx.type;
+			
+			for(int i = 0; i < exp->newx.init.length; ++i)
+			{
+				expr_t* init = vec_get_value(&exp->newx.init, i, expr_t*);
+				
+				char is_function;
+				int member_index = get_struct_type_member_index(exp->newx.type, init->binx.lhs->varx.name, &is_function);
+				if(!is_function) // NOTE: This is an error later if this condition is not met
+				{
+					resolve_type_tags(init->binx.rhs);
+					
+					type_tag_member_t* mem = vec_get(&exp->newx.type->ds.members, member_index);
+					if(!compare_type_tags(init->binx.rhs->tag, mem->type))
+						error_defer_e(init->binx.rhs, "Type of initializer does not match type of member '%s' being initialized\n", mem->name);
+				}
+			}
 		} break;
 			
 		case EXP_NUMBER:
@@ -2796,10 +2914,13 @@ static void resolve_type_tags(void* vexp)
 		case EXP_CALL:
 		{
 			resolve_type_tags(exp->callx.func);
-			if(exp->callx.func->tag->type != TAG_FUNC)
+			if(exp->callx.func->tag->type == TAG_DYNAMIC)
+				warn_e(exp, WARN_CALL_DYNAMIC);
+			
+			if(exp->callx.func->tag->type != TAG_FUNC && exp->callx.func->tag->type != TAG_DYNAMIC)
 				error_defer_e(exp, "Attempting to call something that is not a function\n");
 			
-			if(exp->callx.args.length != exp->callx.func->tag->func.arg_types.length)
+			if(exp->callx.func->tag->type != TAG_DYNAMIC && exp->callx.args.length != exp->callx.func->tag->func.arg_types.length)
 				error_defer_e(exp, "Passed %d argument(s) into function expecting %d argument(s)\n", 
 				exp->callx.args.length, exp->callx.func->tag->func.arg_types.length);
 			else
@@ -2808,9 +2929,12 @@ static void resolve_type_tags(void* vexp)
 				{
 					expr_t* arg = vec_get_value(&exp->callx.args, i, expr_t*);
 					resolve_type_tags(arg);
-				
-					type_tag_t* expected_tag = vec_get_value(&exp->callx.func->tag->func.arg_types, i, type_tag_t*);
-					if(!compare_type_tags(arg->tag, expected_tag)) error_defer_e(arg, "Type of argument %i does not match expected type\n", i + 1);
+					
+					if(exp->callx.func->tag->type != TAG_DYNAMIC)
+					{
+						type_tag_t* expected_tag = vec_get_value(&exp->callx.func->tag->func.arg_types, i, type_tag_t*);
+						if(!compare_type_tags(arg->tag, expected_tag)) error_defer_e(arg, "Type of argument %i does not match expected type\n", i + 1);
+					}
 				}
 			}
 			
@@ -2870,6 +2994,7 @@ static void resolve_type_tags(void* vexp)
 					expr_t* e = vec_get_value(&exp->array_literal.values, i, expr_t*);
 					if(!compare_type_tags(e->tag, tag->contained))
 					{
+						warn_e(e, WARN_DYNAMIC_ARRAY_LITERAL);
 						tag = create_type_tag(TAG_DYNAMIC);			// NOTE: okay, so it must be a dynamic literal
 						break;										// NOTE: also, we don't care about the types anymore
 					}
@@ -3365,9 +3490,7 @@ static void compile_expr(script_t* script, expr_t* exp)
 			int loc = script->code.length;
 			append_int(script, 0);
 			
-			char* name = estrdup(exp->funcx.decl->name);
-			vec_push_back(&script->function_names, &name);
-			vec_push_back(&script->function_pcs, &script->code.length);
+			vec_set(&script->function_pcs, exp->funcx.decl->index, &script->code.length);
 			
 			for(int i = 0; i < exp->funcx.decl->locals.length; ++i)
 				append_code(script, OP_PUSH_NULL);
@@ -3597,6 +3720,14 @@ static void ext_create_native_type(script_t* script, vector_t* args)
 	script_return_top(script);
 }
 
+static void ext_create_dynamic_type(script_t* script, vector_t* args)
+{
+	EXT_CHECK_IF_CT("create_dynamic_type");
+	
+	script_push_native(script, create_type_tag(TAG_DYNAMIC), NULL, NULL);
+	script_return_top(script);
+}
+
 static void ext_create_void_type(script_t* script, vector_t* args)
 {
 	EXT_CHECK_IF_CT("create_void_type");
@@ -3663,8 +3794,8 @@ static void ext_reference_variable(script_t* script, vector_t* args)
 	EXT_CHECK_IF_CT("reference_variable");
 	
 	script_value_t* name_val = script_get_arg(args, 0);
-	script_value_t* func_decl_val = script_get_arg(args, 2);
-	script_value_t* scope_val = script_get_arg(args, 3);
+	script_value_t* func_decl_val = script_get_arg(args, 1);
+	script_value_t* scope_val = script_get_arg(args, 2);
 	
 	const char* name = name_val->string.data;
 	func_decl_t* decl = NULL;
@@ -3679,7 +3810,11 @@ static void ext_reference_variable(script_t* script, vector_t* args)
 	g_cur_func = decl;
 	g_scope = scope;
 	
-	script_push_native(script, reference_variable(name), NULL, NULL);
+	var_decl_t* vdecl = reference_variable(name);
+	if(!vdecl)
+		error_exit_script(script, "Attempted to reference non-existent variable '%s'\n", name);
+	else
+		script_push_native(script, vdecl, NULL, NULL);
 	script_return_top(script);
 }
 
@@ -3694,6 +3829,20 @@ static void ext_make_var_expr(script_t* script, vector_t* args)
 	
 	exp->varx.decl = decl;
 	exp->varx.name = estrdup(decl->name);
+	
+	script_push_native(script, exp, NULL, NULL);
+	script_return_top(script);
+}
+
+static void ext_make_undeclared_var_expr(script_t* script, vector_t* args)
+{
+	EXT_CHECK_IF_CT("make_undeclared_var_expr");
+	
+	script_value_t* name_val = script_get_arg(args, 0);
+	expr_t* exp = create_expr(EXP_VAR);
+	
+	exp->varx.decl = NULL;
+	exp->varx.name = estrdup(name_val->string.data);
 	
 	script_push_native(script, exp, NULL, NULL);
 	script_return_top(script);
@@ -3730,13 +3879,29 @@ static void ext_make_call_expr(script_t* script, vector_t* args)
 	script_value_t* args_val = script_get_arg(args, 1);
 	
 	expr_t* exp = create_expr(EXP_CALL);
+	vec_init(&exp->callx.args, sizeof(expr_t*));
 	exp->callx.func = func_val->nat.value;
 	
 	for(int i = 0; i < args_val->array.length; ++i)
 	{
-		expr_t* arg_exp = vec_get_value(&args_val->array, i, expr_t*);
-		vec_push_back(&exp->callx.args, &arg_exp);
+		script_value_t* arg_exp_val = vec_get_value(&args_val->array, i, script_value_t*);
+		vec_push_back(&exp->callx.args, &arg_exp_val->nat.value);
 	}
+	
+	script_push_native(script, exp, NULL, NULL);
+	script_return_top(script);
+}
+
+static void ext_make_array_index_expr(script_t* script, vector_t* args)
+{
+	EXT_CHECK_IF_CT("make_array_index_expr");
+	
+	script_value_t* array_exp_val = script_get_arg(args, 0);
+	script_value_t* index_exp_val = script_get_arg(args, 1);
+	
+	expr_t* exp = create_expr(EXP_ARRAY_INDEX);
+	exp->array_index.array = array_exp_val->nat.value;
+	exp->array_index.index = index_exp_val->nat.value;
 	
 	script_push_native(script, exp, NULL, NULL);
 	script_return_top(script);
@@ -3816,8 +3981,10 @@ static void ext_number_to_char(script_t* script, vector_t* args)
 static void ext_number_to_string(script_t* script, vector_t* args)
 {
 	script_value_t* val = script_get_arg(args, 0);
+	
 	static char buf[256]; // TODO: don't use a magic number here
 	sprintf(buf, "%g", val->number);
+	
 	script_push_cstr(script, buf);
 	script_return_top(script);
 }
@@ -3862,7 +4029,7 @@ static void delete_u8_buffer(void* pbuf)
 	free(buf);
 }
 
-static void ext_make_u8_buffer(script_t* script, vector_t* args)
+static void ext_create_u8_buffer(script_t* script, vector_t* args)
 {
 	vector_t* buf = emalloc(sizeof(vector_t));
 	vec_init(buf, sizeof(uint8_t));
@@ -3932,6 +4099,7 @@ static void bind_default_externs(script_t* script)
 	script_bind_extern(script, "create_function_type", ext_create_function_type);
 	script_bind_extern(script, "create_array_type", ext_create_array_type);
 	script_bind_extern(script, "create_native_type", ext_create_native_type);
+	script_bind_extern(script, "create_dynamic_type", ext_create_dynamic_type);
 	script_bind_extern(script, "create_void_type", ext_create_void_type);
 	
 	script_bind_extern(script, "reference_function", ext_reference_func);
@@ -3942,9 +4110,11 @@ static void bind_default_externs(script_t* script)
 	script_bind_extern(script, "make_num_expr", ext_make_num_expr);
 	script_bind_extern(script, "make_string_expr", ext_make_string_expr);
 	script_bind_extern(script, "make_var_expr", ext_make_var_expr);
+	script_bind_extern(script, "make_undeclared_var_expr", ext_make_undeclared_var_expr);
 	script_bind_extern(script, "make_write_expr", ext_make_write_expr);
 	script_bind_extern(script, "make_bin_expr", ext_make_bin_expr);
 	script_bind_extern(script, "make_call_expr", ext_make_call_expr);
+	script_bind_extern(script, "make_array_index_expr", ext_make_array_index_expr);
 	
 	script_bind_extern(script, "get_func_expr_decl", ext_get_func_expr_decl);
 	
@@ -3964,7 +4134,7 @@ static void bind_default_externs(script_t* script)
 	script_bind_extern(script, "floor", ext_floor);
 	script_bind_extern(script, "ceil", ext_ceil);
 	
-	script_bind_extern(script, "make_u8_buffer", ext_make_u8_buffer);
+	script_bind_extern(script, "create_u8_buffer", ext_create_u8_buffer);
 	script_bind_extern(script, "u8_buffer_clear", ext_u8_buffer_clear);
 	script_bind_extern(script, "u8_buffer_length", ext_u8_buffer_length);
 	script_bind_extern(script, "u8_buffer_push", ext_u8_buffer_push);
@@ -4231,16 +4401,17 @@ static void collect_garbage(script_t* script)
 
 static script_value_t* new_value(script_t* script, script_value_type_t type)
 {
-	if(!script->in_extern && script->num_objects >= script->max_objects_until_gc) collect_garbage(script);
-
 	script_value_t* val;
 	if(script->free_list)
 	{
 		val = script->free_list;
 		script->free_list = script->free_list->next;
 	}
-	else 
+	else
+	{			
+		if(!script->in_extern && script->num_objects >= script->max_objects_until_gc) collect_garbage(script); 
 		val = emalloc(sizeof(script_value_t));
+	}
 	
 	val->marked = 0;
 	val->type = type;

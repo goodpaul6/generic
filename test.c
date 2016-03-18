@@ -20,8 +20,12 @@ int main(int argc, char* argv[])
 	script_load_parse_file(&script, "test.txt");
 	script_compile(&script);
 	
-	script_dissassemble(&script, stdout);
-	
+	for(int i = 2; i < argc; ++i)
+	{
+		if(strcmp(argv[i], "-dis") == 0)
+			script_dissassemble(&script, stdout);
+	}
+		
 	LARGE_INTEGER start, end, msec;
 	LARGE_INTEGER freq;
 	
@@ -37,7 +41,7 @@ int main(int argc, char* argv[])
 	msec.QuadPart *= 1000000;
 	msec.QuadPart /= freq.QuadPart;
 	
-	printf("It took %ul us to run\n", msec.QuadPart);
+	printf("It took %u us to run\n", msec.QuadPart);
 	
 	script_destroy(&script);
 
