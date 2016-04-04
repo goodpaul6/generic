@@ -72,6 +72,14 @@ typedef enum script_op
 	OP_HALT
 } script_op_t;
 
+typedef enum
+{
+	WARN_DYNAMIC_ARRAY_LITERAL,
+	WARN_ARRAY_DYNAMIC_TO_SPECIFIC,
+	WARN_CALL_DYNAMIC,
+	NUM_WARNINGS
+} script_warning_t;
+
 typedef enum script_value_type
 {
 	VAL_NULL,
@@ -140,8 +148,14 @@ typedef struct script_module
 	char* source_code;
 	char* local_path;
 	char parsed;
+	char compiled;
 	vector_t expr_list;
 	vector_t compile_time_funcs;	// NOTE: array of expr_t's which should be executed when the module is compiled
+
+	vector_t all_type_tags;			// NOTE: array of type_tag_t's
+	hashmap_t user_type_tags;		// NOTE: hashmap of char* to type_tag_t's for struct tags
+	vector_t functions;				// NOTE: array of func_decl_t's
+	vector_t globals;				// NOTE: array of var_decl_t's
 } script_module_t;
 
 typedef struct script_debug_env
@@ -174,7 +188,7 @@ typedef struct
 	
 	int num_objects;
 	int max_objects_until_gc;
-	
+
 	vector_t globals;
 	
 	vector_t stack;
@@ -206,9 +220,16 @@ void script_load_parse_file(script_t* script, const char* filename);
 void script_parse_file(script_t* script, FILE* in, const char* module_name);
 void script_parse_code(script_t* script, const char* code, const char* module_name);
 
+void script_disable_warning(script_warning_t warning, char disabled);
+
 void script_compile(script_t* script);
 void script_dissassemble(script_t* script, FILE* out);
 void script_run(script_t* script);
+
+void script_start(script_t* script);
+void script_execute_cycle(script_t* script);
+void script_stop(script_t* script);
+
 void script_debug(script_t* script, script_debug_env_t* env);
 
 char script_get_function_by_name(script_t* script, const char* name, script_function_t* function);

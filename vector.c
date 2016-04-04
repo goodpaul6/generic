@@ -91,13 +91,15 @@ void vec_resize(vector_t* vector, size_t amount, void* p_initial_value)
 
 void* vec_get(vector_t* vector, size_t index)
 {
-	if(index >= vector->length) error_exit("Provided out of bounds index (%i) to vec_get (vector length: %i)\n", (int)index, (int)vector->length);
+	if(index >= vector->length) 
+		error_exit("Provided out of bounds index (%i) to vec_get (vector length: %i)\n", (int)index, (int)vector->length);
 	return &vector->data[index * vector->datum_size];
 }
 
 void vec_set(vector_t* vector, size_t index, void* object)
 {
-	if(index >= vector->length) error_exit("Provided out of bounds index (%i) to vec_set (vector length: %i)\n", (int)index, (int)vector->length);
+	if(index >= vector->length) 
+		error_exit("Provided out of bounds index (%i) to vec_set (vector length: %i)\n", (int)index, (int)vector->length);
 	memcpy(&vector->data[index * vector->datum_size], object, vector->datum_size);
 }
 

@@ -423,21 +423,9 @@ static const char* g_code = NULL;
 static char g_lexeme[MAX_LEX_CHARS];
 static int g_cur_tok = 0;
 static int g_scope = 0;
-static vector_t g_globals;
-static vector_t g_functions;
 static func_decl_t* g_cur_func = NULL;
-static hashmap_t g_user_type_tags;
-static vector_t g_all_type_tags;
 static char g_has_error = 0;
 static int g_cur_module_index = 0;
-
-typedef enum
-{
-	WARN_DYNAMIC_ARRAY_LITERAL,
-	WARN_ARRAY_DYNAMIC_TO_SPECIFIC,
-	WARN_CALL_DYNAMIC,
-	NUM_WARNINGS
-} warning_t;
 
 static char g_warning_disabled[NUM_WARNINGS] = {0};
 static const char* g_warning_name[NUM_WARNINGS] = {
@@ -455,7 +443,7 @@ static const char* g_warning_format[NUM_WARNINGS] = {
 static int g_last_compiled_line = 0;
 static const char* g_last_compiled_file = NULL;
 
-static void warn_c(context_t ctx, warning_t warning, ...)
+static void warn_c(context_t ctx, script_warning_t warning, ...)
 {
 	if(!g_warning_disabled[(int)warning])
 	{
@@ -470,7 +458,7 @@ static void warn_c(context_t ctx, warning_t warning, ...)
 	}
 }
 
-static void warn_e(expr_t* exp, warning_t warning, ...)
+static void warn_e(expr_t* exp, script_warning_t warning, ...)
 {
 	if(!g_warning_disabled[(int)warning])
 	{
@@ -764,13 +752,7 @@ static void delete_expr(expr_t* exp)
 	free(exp);
 }
 
-static void init_type_tags()
-{
-	map_init(&g_user_type_tags);
-	vec_init(&g_all_type_tags, sizeof(type_tag_t*));
-}
-
-static type_tag_t* create_type_tag(tag_t type)
+static type_tag_t* create_type_tag(script_t* script, tag_t type)
 {
 	type_tag_t* tag = emalloc(sizeof(type_tag_t)); 
 	
@@ -809,28 +791,44 @@ static type_tag_t* create_type_tag(tag_t type)
 		default: break;
 	}
 	
-	vec_push_back(&g_all_type_tags, &tag);
+	script_module_t* module = vec_get(&script->modules, g_cur_module_index);
+	vec_push_back(&module->all_type_tags, &tag);
+
 	return tag;
 }
 
-static type_tag_t* get_type_tag_from_name(const char* name)
+static type_tag_t* get_user_type_tag_from_name(script_t* script, const char* name)
 {
-	type_tag_t* user_tag = map_get(&g_user_type_tags, name);
+	for (int i = 0; i < script->modules.length; ++i)
+	{
+		script_module_t* module = vec_get(&script->modules, i);
+		var_decl_t* decl = map_get(&module->user_type_tags, name);
+		if (decl)
+			return decl;
+	}
+
+	return NULL;
+}
+
+static type_tag_t* get_type_tag_from_name(script_t* script, const char* name)
+{
+	type_tag_t* user_tag = get_user_type_tag_from_name(script, name);
 	if(user_tag) return user_tag;
 	
 	for(int i = 0; i < NUM_BUILTIN_TAGS; ++i)
 	{
 		if(strcmp(g_builtin_type_tags[i], name) == 0)
-			return create_type_tag((tag_t)i);
+			return create_type_tag(script, (tag_t)i);
 	}
 	
-	type_tag_t* potential_tag = create_type_tag(TAG_STRUCT);
+	type_tag_t* potential_tag = create_type_tag(script, TAG_STRUCT);
 	
 	potential_tag->ds.name = estrdup(name);
 	vec_init(&potential_tag->ds.members, sizeof(type_tag_member_t));
 	potential_tag->defined = 0;
 	
-	map_set(&g_user_type_tags, name, potential_tag);
+	script_module_t* module = vec_get(&script->modules, g_cur_module_index);
+	map_set(&module->user_type_tags, name, potential_tag);
 	
 	return potential_tag;
 }
@@ -889,11 +887,12 @@ static char compare_type_tags(type_tag_t* a, type_tag_t* b)
 	return 1;
 }
 
-static void check_all_tags_defined()
+static void check_all_tags_defined(script_t* script)
 {
-	for(int i = 0; i < g_all_type_tags.length; ++i)
+	script_module_t* module = vec_get(&script->modules, g_cur_module_index);
+	for(int i = 0; i < module->all_type_tags.length; ++i)
 	{
-		type_tag_t* tag = vec_get_value(&g_all_type_tags, i, type_tag_t*);
+		type_tag_t* tag = vec_get_value(&module->all_type_tags, i, type_tag_t*);
 		if(!tag->defined) error_defer_c(tag->ctx, "Use of undefined type '%s'\n", tag->ds.name);
 	}
 }
@@ -935,14 +934,15 @@ static void destroy_type_tag(void* vtag)
 	}
 }
 
-static type_tag_t* define_struct_type(const char* name, char is_union)
+static type_tag_t* define_struct_type(script_t* script, const char* name, char is_union)
 {
-	type_tag_t* tag = map_get(&g_user_type_tags, name);
+	script_module_t* module = vec_get(&script->modules, g_cur_module_index);
+	type_tag_t* tag = map_get(&module->user_type_tags, name);
 	if(!tag)
 	{
-		tag = create_type_tag(TAG_STRUCT);
+		tag = create_type_tag(script, TAG_STRUCT);
 		tag->ds.name = estrdup(name);
-		map_set(&g_user_type_tags, name, tag);
+		map_set(&module->user_type_tags, name, tag);
 	}
 	
 	tag->ds.is_union = is_union;
@@ -951,31 +951,12 @@ static type_tag_t* define_struct_type(const char* name, char is_union)
 	return tag;
 }
 
-static void reset_type_tags()
-{
-	map_clear(&g_user_type_tags);
-}
-
 static void traverse_all_tags(void* vp_tag)
 {
 	type_tag_t* tag = *(type_tag_t**)vp_tag;
 	
 	destroy_type_tag(tag);
 	free(tag);
-}
-
-static void destroy_type_tags()
-{
-	map_destroy(&g_user_type_tags);
-	
-	vec_traverse(&g_all_type_tags, traverse_all_tags);
-	vec_destroy(&g_all_type_tags);
-}
-
-static void init_symbols()
-{
-	vec_init(&g_globals, sizeof(var_decl_t*));
-	vec_init(&g_functions, sizeof(func_decl_t*));
 }
 
 static void delete_var_decl(void* vp)
@@ -999,32 +980,10 @@ static void delete_func_decl(void* vp)
 	free(decl);
 }
 
-static void destroy_symbol_data()
+static var_decl_t* reference_variable(script_t* script, const char* name);
+static var_decl_t* declare_variable(script_t* script, const char* name, type_tag_t* tag)
 {
-	vec_traverse(&g_globals, delete_var_decl);
-	vec_traverse(&g_functions, delete_func_decl);
-}
-
-static void destroy_symbols()
-{
-	destroy_symbol_data();
-	
-	vec_destroy(&g_globals);
-	vec_destroy(&g_functions); 
-}
-
-static void reset_symbols()
-{
-	destroy_symbol_data();
-	
-	vec_clear(&g_globals);
-	vec_clear(&g_functions);
-}
-
-static var_decl_t* reference_variable(const char* name);
-static var_decl_t* declare_variable(const char* name, type_tag_t* tag)
-{
-	var_decl_t* decl = reference_variable(name);
+	var_decl_t* decl = reference_variable(script, name);
 	
 	if(!decl)
 	{
@@ -1037,14 +996,25 @@ static var_decl_t* declare_variable(const char* name, type_tag_t* tag)
 		
 		if(g_cur_func)
 		{
-			decl->index = g_cur_func->locals.length;			
+			decl->index = g_cur_func->locals.length;
 			vec_push_back(&g_cur_func->locals, &decl);
 			return decl;
 		}
 	
-		decl->index = g_globals.length;
-		
-		vec_push_back(&g_globals, &decl);
+		// NOTE: g_cur_module_index MUST have the right value rn
+		script_module_t* module = vec_get(&script->modules, g_cur_module_index);
+
+		// NOTE: The global index must be unique across modules
+		int index = module->globals.length;
+		for (int i = 0; i < g_cur_module_index; ++i)
+		{
+			script_module_t* prev_module = vec_get(&script->modules, i);
+			index += prev_module->globals.length;
+		}
+
+		decl->index = index;
+		vec_push_back(&module->globals, &decl);
+
 		return decl;
 	}
 	else if(!g_cur_func)
@@ -1089,7 +1059,7 @@ static void exit_scope()
 	--g_scope;
 }
 
-static var_decl_t* reference_variable(const char* name)
+static var_decl_t* reference_variable(script_t* script, const char* name)
 {
 	if(g_cur_func)
 	{
@@ -1109,10 +1079,14 @@ static var_decl_t* reference_variable(const char* name)
 		}
 	}
 
-	for(int i = 0; i < g_globals.length; ++i)
+	for (int module_index = 0; module_index < script->modules.length; ++module_index)
 	{
-		var_decl_t* decl = vec_get_value(&g_globals, i, var_decl_t*);
-		if(strcmp(decl->name, name) == 0) return decl;
+		script_module_t* module = vec_get(&script->modules, module_index);
+		for (int i = 0; i < module->globals.length; ++i)
+		{
+			var_decl_t* decl = vec_get_value(&module->globals, i, var_decl_t*);
+			if (strcmp(decl->name, name) == 0) return decl;
+		}
 	}
 	
 	return NULL;
@@ -1120,11 +1094,12 @@ static var_decl_t* reference_variable(const char* name)
 
 static func_decl_t* declare_function(script_t* script, const char* name)
 {
+	script_module_t* module = vec_get(&script->modules, g_cur_module_index);
 	func_decl_t* decl = emalloc(sizeof(func_decl_t));
 	
 	decl->parent = g_cur_func;
 	decl->type = DECL_FUNCTION;
-	decl->tag = create_type_tag(TAG_FUNC);
+	decl->tag = create_type_tag(script, TAG_FUNC);
 	decl->name = estrdup(name);
 	
 	vec_init(&decl->locals, sizeof(var_decl_t*));
@@ -1140,7 +1115,7 @@ static func_decl_t* declare_function(script_t* script, const char* name)
 	
 	decl->has_return = 0;
 
-	vec_push_back(&g_functions, &decl);
+	vec_push_back(&module->functions, &decl);
 	return decl;
 }
 
@@ -1157,11 +1132,12 @@ static int get_extern_index(script_t* script, const char* name)
 
 static func_decl_t* declare_extern(script_t* script, const char* name)
 {
+	script_module_t* module = vec_get(&script->modules, g_cur_module_index);
 	func_decl_t* decl = emalloc(sizeof(func_decl_t));
 	
 	decl->parent = g_cur_func;
 	decl->type = DECL_EXTERN;
-	decl->tag = create_type_tag(TAG_FUNC);
+	decl->tag = create_type_tag(script, TAG_FUNC);
 	decl->name = estrdup(name);
 	
 	vec_init(&decl->locals, sizeof(var_decl_t*));
@@ -1171,17 +1147,21 @@ static func_decl_t* declare_extern(script_t* script, const char* name)
 	if(index < 0) error_exit_p("Attempted to declare unbound extern by name '%s'\n", name);
 	decl->index = index;
 
-	vec_push_back(&g_functions, &decl);
+	vec_push_back(&module->functions, &decl);
 	return decl;
 }
 
-static func_decl_t* reference_function(const char* name)
+static func_decl_t* reference_function(script_t* script, const char* name)
 {
-	for(int i = 0; i < g_functions.length; ++i)
+	for (int module_index = 0; module_index < script->modules.length; ++module_index)
 	{
-		func_decl_t* decl = vec_get_value(&g_functions, i, func_decl_t*);
-		if(strcmp(decl->name,  name) == 0)
-			return decl;
+		script_module_t* module = vec_get(&script->modules, module_index);
+		for (int i = 0; i < module->functions.length; ++i)
+		{
+			func_decl_t* decl = vec_get_value(&module->functions, i, func_decl_t*);
+			if (strcmp(decl->name, name) == 0)
+				return decl;
+		}
 	}
 	
 	return NULL;
@@ -1450,7 +1430,7 @@ static expr_t* parse_expr(script_t* script);
 
 static type_tag_t* parse_type_tag(script_t* script)
 {
-	type_tag_t* tag = get_type_tag_from_name(g_lexeme);
+	type_tag_t* tag = get_type_tag_from_name(script, g_lexeme);
 	if(!tag) error_exit_p("Invalid type tag '%s'\n", g_lexeme);
 	get_next_token();
 
@@ -1537,7 +1517,7 @@ static expr_t* parse_ident(script_t* script)
 	expr_t* exp = create_expr(EXP_VAR);
 	
 	exp->varx.name = estrdup(g_lexeme);
-	exp->varx.decl = reference_variable(g_lexeme);
+	exp->varx.decl = reference_variable(script, g_lexeme);
 	
 	get_next_token();
 	
@@ -1558,7 +1538,7 @@ static expr_t* parse_var(script_t* script)
 	get_next_token();
 	
 	type_tag_t* tag = parse_type_tag(script);
-	exp->varx.decl = declare_variable(exp->varx.name, tag);
+	exp->varx.decl = declare_variable(script, exp->varx.name, tag);
 
 	return exp;
 }
@@ -1794,7 +1774,7 @@ static expr_t* parse_struct(script_t* script)
 	// type_tag_t* tag = define_struct_type(g_lexeme, is_union);
 	
 	if(g_cur_tok != TOK_IDENT) error_exit_p("Expected identifier after '%s'\n", is_union ? "union" : "struct");
-	type_tag_t* tag = define_struct_type(g_lexeme, is_union);
+	type_tag_t* tag = define_struct_type(script, g_lexeme, is_union);
 	
 	get_next_token();
 	
@@ -1808,7 +1788,7 @@ static expr_t* parse_struct(script_t* script)
 			get_next_token();
 			if(g_cur_tok != TOK_IDENT) error_exit_p("Expected identifier after 'using' but received '%s'\n", g_token_names[g_cur_tok]);
 			
-			type_tag_t* used_type = get_type_tag_from_name(g_lexeme);
+			type_tag_t* used_type = get_type_tag_from_name(script, g_lexeme);
 			vec_push_back(&tag->ds.using, &used_type);
 			
 			get_next_token();
@@ -1834,7 +1814,7 @@ static expr_t* parse_struct(script_t* script)
 			get_next_token();
 			
 			size_t length = strlen(tag->ds.name) + strlen(name) + 2;
-			char buf[length];
+			char* buf = emalloc(length + 1);
 			sprintf(buf, "%s_%s", tag->ds.name, name); 
 			buf[length - 1] = '\0';
 			
@@ -1873,6 +1853,7 @@ static expr_t* parse_struct(script_t* script)
 			
 			vec_push_back(&tag->ds.functions, &mem);
 			
+			free(buf);
 			exit_function();
 		}
 		else
@@ -1914,14 +1895,15 @@ static expr_t* parse_null(script_t* script)
 	return exp;
 }
 
-static void add_module(script_t* script, const char* local_path, const char* code)
+// NOTE: Returns module index
+static int add_module(script_t* script, const char* local_path, const char* code)
 {
 	// NOTE: This'll slow down add module a bit (but who cares, how many modules could you possibly have :)
 	for(int i = 0; i < script->modules.length; ++i)
 	{
 		script_module_t* module = vec_get(&script->modules, i);
-		if(strcmp(module->local_path, local_path) == 0)
-			return;
+		if (strcmp(module->local_path, local_path) == 0)
+			return i;
 	}
 	
 	script_module_t module;
@@ -1931,10 +1913,18 @@ static void add_module(script_t* script, const char* local_path, const char* cod
 	module.local_path = estrdup(local_path);
 	module.source_code = estrdup(code);
 	module.parsed = 0;
+	module.compiled = 0;
+	
 	vec_init(&module.expr_list, sizeof(expr_t*));
 	vec_init(&module.compile_time_funcs, sizeof(expr_t*));
 	
+	vec_init(&module.globals, sizeof(var_decl_t*));
+	vec_init(&module.functions, sizeof(func_decl_t*));
+	vec_init(&module.all_type_tags, sizeof(type_tag_t*));
+	map_init(&module.user_type_tags);
+
 	vec_push_back(&script->modules, &module);
+	return script->modules.length - 1;
 }
 
 static void apply_import_directive(script_t* script, const char* filename)
@@ -2135,7 +2125,7 @@ static expr_t* parse_unary(script_t* script)
 			
 			if(g_cur_tok == TOK_IDENT)
 			{
-				type_tag_t* tag = get_type_tag_from_name(g_lexeme);
+				type_tag_t* tag = get_type_tag_from_name(script, g_lexeme);
 				if(tag->type == TAG_STRUCT)
 				{
 					exp = create_expr(EXP_STRUCT_NEW);
@@ -2171,7 +2161,7 @@ static expr_t* parse_unary(script_t* script)
 		not_type:
 			exp = create_expr(EXP_VAR);
 			exp->varx.name = estrdup("new");
-			exp->varx.decl = reference_variable("new");
+			exp->varx.decl = reference_variable(script, "new");
 			
 			return parse_post(script, exp);
 		} break;
@@ -2391,19 +2381,19 @@ static inline void patch_int(script_t* script, int loc, int v)
 		vec_set(&script->code, loc + i, vp++);
 }
 
-static void resolve_symbols(expr_t* exp)
+static void resolve_symbols(script_t* script, expr_t* exp)
 {
 	switch(exp->type)
 	{
 		case EXP_DOT: case EXP_COLON:
 		{
-			resolve_symbols(exp->dotx.value);
+			resolve_symbols(script, exp->dotx.value);
 		} break;
 		
 		case EXP_STRUCT_NEW:
 		{
 			for(int i = 0; i < exp->newx.init.length; ++i)
-				resolve_symbols(vec_get_value(&exp->newx.init, i, expr_t*));
+				resolve_symbols(script, vec_get_value(&exp->newx.init, i, expr_t*));
 		} break;
 		
 		case EXP_STRUCT_DECL:
@@ -2412,13 +2402,13 @@ static void resolve_symbols(expr_t* exp)
 			{
 				type_tag_member_t* mem = vec_get(&exp->struct_tag->ds.members, i);
 				if(mem->default_value)
-					resolve_symbols(mem->default_value);
+					resolve_symbols(script, mem->default_value);
 			}
 			
 			for(int i = 0; i < exp->struct_tag->ds.functions.length; ++i)
 			{
 				type_mem_fn_t* mem = vec_get(&exp->struct_tag->ds.functions, i);
-				resolve_symbols(mem->body);
+				resolve_symbols(script, mem->body);
 			}
 		} break;
 		
@@ -2432,88 +2422,88 @@ static void resolve_symbols(expr_t* exp)
 		case EXP_VAR:
 		{
 			if(exp->varx.decl) return;
-			exp->varx.decl = reference_variable(exp->varx.name);
+			exp->varx.decl = reference_variable(script, exp->varx.name);
 			if(!exp->varx.decl) 
 			{
-				if(reference_function(exp->varx.name)) return;
-				if(get_type_tag_from_name(exp->varx.name)) return;
+				if(reference_function(script, exp->varx.name)) return;
+				if(get_type_tag_from_name(script, exp->varx.name)) return;
 				error_defer_e(exp, "Attempted to reference undeclared entity '%s'\n", exp->varx.name);
 			}
 		} break;
 		
 		case EXP_UNARY:
 		{
-			resolve_symbols(exp->unaryx.rhs);
+			resolve_symbols(script, exp->unaryx.rhs);
 		} break;
 		
 		case EXP_BINARY:
 		{
-			resolve_symbols(exp->binx.lhs);
-			resolve_symbols(exp->binx.rhs);
+			resolve_symbols(script, exp->binx.lhs);
+			resolve_symbols(script, exp->binx.rhs);
 		} break;
 		
 		case EXP_PAREN:
 		{
-			resolve_symbols(exp->paren);
+			resolve_symbols(script, exp->paren);
 		} break;
 		
 		case EXP_BLOCK:
 		{
 			for(int i = 0; i < exp->block.length; ++i)
-				resolve_symbols(vec_get_value(&exp->block, i, expr_t*));
+				resolve_symbols(script, vec_get_value(&exp->block, i, expr_t*));
 		} break;
 		
 		case EXP_ARRAY_INDEX:
 		{
-			resolve_symbols(exp->array_index.array);
-			resolve_symbols(exp->array_index.index);
+			resolve_symbols(script, exp->array_index.array);
+			resolve_symbols(script, exp->array_index.index);
 		} break;
 		
 		case EXP_ARRAY_LITERAL:
 		{
 			for(int i = 0; i < exp->array_literal.values.length; ++i)
-				resolve_symbols(vec_get_value(&exp->array_literal.values, i, expr_t*));
+				resolve_symbols(script, vec_get_value(&exp->array_literal.values, i, expr_t*));
 		} break;
 		
 		case EXP_IF:
 		{
-			resolve_symbols(exp->ifx.cond);
-			resolve_symbols(exp->ifx.body);
-			if(exp->ifx.alt) resolve_symbols(exp->ifx.alt);
+			resolve_symbols(script, exp->ifx.cond);
+			resolve_symbols(script, exp->ifx.body);
+			if(exp->ifx.alt) resolve_symbols(script, exp->ifx.alt);
 		} break;
 		
 		case EXP_WHILE:
 		{
-			resolve_symbols(exp->whilex.cond);
-			resolve_symbols(exp->whilex.body);
+			resolve_symbols(script, exp->whilex.cond);
+			resolve_symbols(script, exp->whilex.body);
 		} break;
 		
 		case EXP_RETURN:
 		{
 			if(exp->retx.value)
-				resolve_symbols(exp->retx.value);
+				resolve_symbols(script, exp->retx.value);
 		} break;
 		
 		case EXP_CALL:
 		{
 			for(int i = 0; i < exp->callx.args.length; ++i)
-				resolve_symbols(vec_get_value(&exp->callx.args, i, expr_t*));
-			resolve_symbols(exp->callx.func);
+				resolve_symbols(script, vec_get_value(&exp->callx.args, i, expr_t*));
+			resolve_symbols(script, exp->callx.func);
 		} break;
 		
 		case EXP_FUNC:
 		{
-			resolve_symbols(exp->funcx.body);
+			resolve_symbols(script, exp->funcx.body);
 		} break;
 		
 		case EXP_WRITE:
 		{
-			resolve_symbols(exp->write);
+			resolve_symbols(script, exp->write);
 		} break;
 		
 		case EXP_LEN:
 		{
-			resolve_symbols(exp->len);
+			resolve_symbols(script, exp->len);
 		} break;
 	}
 }
@@ -2701,15 +2691,19 @@ static void finalize_type(const char* key, void* v_tag, void* data)
 
 // NOTE: Called before 'resolve_symbols' but after 'check_all_tags_defined'
 // NOTE: All the 'using' statements inside structs are evaluated
-static void finalize_types()
+static void finalize_types(script_t* script)
 {	
-	map_traverse(&g_user_type_tags, finalize_type, NULL);  
+	for (int i = 0; i < script->modules.length; ++i)
+	{
+		script_module_t* module = vec_get(&script->modules, i);
+		map_traverse(&module->user_type_tags, finalize_type, NULL);
+	}
 }
 
 static int get_struct_type_member_index(type_tag_t* tag, const char* name, char* is_function);
 // TODO: Add type names to error messages
 // NOTE: resolve_symbols before this
-static void resolve_type_tags(void* vexp)
+static void resolve_type_tags(script_t* script, void* vexp)
 {
 	expr_t* exp = vexp;
 	
@@ -2722,7 +2716,7 @@ static void resolve_type_tags(void* vexp)
 	{
 		case EXP_DOT: case EXP_COLON:
 		{
-			resolve_type_tags(exp->dotx.value);
+			resolve_type_tags(script, exp->dotx.value);
 			if(exp->dotx.value->tag->type != TAG_STRUCT) error_defer_e(exp->dotx.value, "Attempted to access members in non-struct type\n");
 			
 			char found = 0;
@@ -2757,25 +2751,25 @@ static void resolve_type_tags(void* vexp)
 			if(!found)
 			{
 				error_defer_e(exp, "Attempted to access non-existent member '%s' in struct %s\n", exp->dotx.name, tag->ds.name);
-				exp->tag = create_type_tag(TAG_VOID); // NOTE: only you can prevent crashes
+				exp->tag = create_type_tag(script, TAG_VOID); // NOTE: only you can prevent crashes
 			}
 		} break;
 		
 		case EXP_NULL:
 		{
-			exp->tag = create_type_tag(TAG_DYNAMIC);
+			exp->tag = create_type_tag(script, TAG_DYNAMIC);
 		} break;
 		
 		case EXP_STRUCT_DECL:
 		{
-			exp->tag = create_type_tag(TAG_VOID);
+			exp->tag = create_type_tag(script, TAG_VOID);
 			
 			for(int i = 0; i < exp->struct_tag->ds.members.length; ++i)
 			{
 				type_tag_member_t* mem = vec_get(&exp->struct_tag->ds.members, i);
 				if(mem->default_value)
 				{	
-					resolve_type_tags(mem->default_value);
+					resolve_type_tags(script, mem->default_value);
 					if(!compare_type_tags(mem->type, mem->default_value->tag))
 						error_defer_e(mem->default_value, "Type of default value does not match type of member variable '%s'\n", mem->name);
 				}
@@ -2784,7 +2778,7 @@ static void resolve_type_tags(void* vexp)
 			for(int i = 0; i < exp->struct_tag->ds.functions.length; ++i)
 			{
 				type_mem_fn_t* mem = vec_get(&exp->struct_tag->ds.functions, i);
-				resolve_type_tags(mem->body);
+				resolve_type_tags(script, mem->body);
 			}
 		} break;
 		
@@ -2800,7 +2794,7 @@ static void resolve_type_tags(void* vexp)
 				int member_index = get_struct_type_member_index(exp->newx.type, init->binx.lhs->varx.name, &is_function);
 				if(!is_function) // NOTE: This is an error later if this condition is not met
 				{
-					resolve_type_tags(init->binx.rhs);
+					resolve_type_tags(script, init->binx.rhs);
 					
 					type_tag_member_t* mem = vec_get(&exp->newx.type->ds.members, member_index);
 					if(!compare_type_tags(init->binx.rhs->tag, mem->type))
@@ -2811,31 +2805,31 @@ static void resolve_type_tags(void* vexp)
 			
 		case EXP_NUMBER:
 		{
-			exp->tag = create_type_tag(TAG_NUMBER);
+			exp->tag = create_type_tag(script, TAG_NUMBER);
 		} break;
 		
 		case EXP_STRING:
 		{
-			exp->tag = create_type_tag(TAG_STRING);
+			exp->tag = create_type_tag(script, TAG_STRING);
 		} break;
 		
 		case EXP_BOOL:
 		{
-			exp->tag = create_type_tag(TAG_BOOL);
+			exp->tag = create_type_tag(script, TAG_BOOL);
 		} break;
 		
 		case EXP_CHAR:
 		{
-			exp->tag = create_type_tag(TAG_CHAR);
+			exp->tag = create_type_tag(script, TAG_CHAR);
 		} break;
 		
 		case EXP_VAR:
 		{
 			if(!exp->varx.decl)
 			{
-				func_decl_t* decl = reference_function(exp->varx.name);
+				func_decl_t* decl = reference_function(script, exp->varx.name);
 				if(decl) exp->tag = decl->tag;
-				else error_exit_e(vexp, "Referencing undeclared function/variable %s\n", exp->varx.name); 
+				else error_exit_e(exp, "Referencing undeclared function/variable '%s'\n", exp->varx.name); 
 			}
 			else
 				exp->tag = exp->varx.decl->tag;
@@ -2843,27 +2837,27 @@ static void resolve_type_tags(void* vexp)
 		
 		case EXP_WRITE:
 		{
-			exp->tag = create_type_tag(TAG_VOID);
-			resolve_type_tags(exp->write);
+			exp->tag = create_type_tag(script, TAG_VOID);
+			resolve_type_tags(script, exp->write);
 		} break;
 		
 		case EXP_UNARY:
 		{
-			resolve_type_tags(exp->unaryx.rhs);
+			resolve_type_tags(script, exp->unaryx.rhs);
 			switch(exp->unaryx.op)
 			{
 				case TOK_NOT:
 				{
 					if(exp->unaryx.rhs->tag->type != TAG_BOOL)
 						error_defer_e(exp->unaryx.rhs, "Attempted to use unary ! operator on non-boolean value\n");
-					exp->tag = create_type_tag(TAG_BOOL);
+					exp->tag = create_type_tag(script, TAG_BOOL);
 				} break;
 				
 				case TOK_MINUS:
 				{
 					if(exp->unaryx.rhs->tag->type != TAG_NUMBER)
 						error_defer_e(exp->unaryx.rhs, "Attempted to use unary - operator on non-numerical value\n");
-					exp->tag = create_type_tag(TAG_NUMBER);
+					exp->tag = create_type_tag(script, TAG_NUMBER);
 				} break;
 				
 				default:
@@ -2874,8 +2868,8 @@ static void resolve_type_tags(void* vexp)
 		
 		case EXP_BINARY:
 		{
-			resolve_type_tags(exp->binx.lhs);
-			resolve_type_tags(exp->binx.rhs);
+			resolve_type_tags(script, exp->binx.lhs);
+			resolve_type_tags(script, exp->binx.rhs);
 		
 			// NOTE: assignment operation lhs does not need to be
 			// number
@@ -2896,7 +2890,7 @@ static void resolve_type_tags(void* vexp)
 				case TOK_PLUS:
 				case TOK_MINUS:
 				case TOK_MUL:
-				case TOK_DIV: exp->tag = create_type_tag(TAG_NUMBER); break;
+				case TOK_DIV: exp->tag = create_type_tag(script, TAG_NUMBER); break;
 				
 				case TOK_LTE:
 				case TOK_GTE:
@@ -2905,15 +2899,15 @@ static void resolve_type_tags(void* vexp)
 				case TOK_EQUALS:
 				case TOK_NOTEQUAL:
 				case TOK_LAND:
-				case TOK_LOR: exp->tag = create_type_tag(TAG_BOOL); break;
+				case TOK_LOR: exp->tag = create_type_tag(script, TAG_BOOL); break;
 				
-				default: exp->tag = create_type_tag(TAG_VOID); break;
+				default: exp->tag = create_type_tag(script, TAG_VOID); break;
 			}
 		} break;
 		
 		case EXP_CALL:
 		{
-			resolve_type_tags(exp->callx.func);
+			resolve_type_tags(script, exp->callx.func);
 			if(exp->callx.func->tag->type == TAG_DYNAMIC)
 				warn_e(exp, WARN_CALL_DYNAMIC);
 			
@@ -2928,7 +2922,7 @@ static void resolve_type_tags(void* vexp)
 				for(int i = 0; i < exp->callx.args.length; ++i)
 				{
 					expr_t* arg = vec_get_value(&exp->callx.args, i, expr_t*);
-					resolve_type_tags(arg);
+					resolve_type_tags(script, arg);
 					
 					if(exp->callx.func->tag->type != TAG_DYNAMIC)
 					{
@@ -2943,31 +2937,31 @@ static void resolve_type_tags(void* vexp)
 		
 		case EXP_PAREN:
 		{
-			resolve_type_tags(exp->paren);
+			resolve_type_tags(script, exp->paren);
 			exp->tag = exp->paren->tag;
 		} break;
 		
 		case EXP_BLOCK:
 		{
-			exp->tag = create_type_tag(TAG_VOID);
+			exp->tag = create_type_tag(script, TAG_VOID);
 			for(int i = 0; i < exp->block.length; ++i)
 			{
 				expr_t* e = vec_get_value(&exp->block, i, expr_t*);
-				resolve_type_tags(e);
+				resolve_type_tags(script, e);
 			}
 		} break;
 		
 		case EXP_ARRAY_INDEX:
 		{
-			resolve_type_tags(exp->array_index.array);
-			resolve_type_tags(exp->array_index.index);
+			resolve_type_tags(script, exp->array_index.array);
+			resolve_type_tags(script, exp->array_index.index);
 			
 			if(!is_type_tag(exp->array_index.index->tag, TAG_NUMBER))
 				error_defer_e(exp->array_index.index, "Attempting to index array with non-number value\n");
 			
 			switch(exp->array_index.array->tag->type)
 			{
-				case TAG_STRING: exp->tag = create_type_tag(TAG_CHAR); break;
+				case TAG_STRING: exp->tag = create_type_tag(script, TAG_CHAR); break;
 				case TAG_ARRAY: exp->tag = exp->array_index.array->tag->contained; break;
 				default:
 					error_defer_e(exp->array_index.array, "Attempting to index non-indexable type\n");
@@ -2980,9 +2974,9 @@ static void resolve_type_tags(void* vexp)
 		case EXP_ARRAY_LITERAL:
 		{
 			for(int i = 0; i < exp->array_literal.values.length; ++i)
-				resolve_type_tags(vec_get_value(&exp->array_literal.values, i, expr_t*));
+				resolve_type_tags(script, vec_get_value(&exp->array_literal.values, i, expr_t*));
 			
-			type_tag_t* tag = create_type_tag(TAG_ARRAY);
+			type_tag_t* tag = create_type_tag(script, TAG_ARRAY);
 			if(exp->array_literal.contained) tag->contained = exp->array_literal.contained;
 			else
 			{
@@ -2995,7 +2989,7 @@ static void resolve_type_tags(void* vexp)
 					if(!compare_type_tags(e->tag, tag->contained))
 					{
 						warn_e(e, WARN_DYNAMIC_ARRAY_LITERAL);
-						tag = create_type_tag(TAG_DYNAMIC);			// NOTE: okay, so it must be a dynamic literal
+						tag = create_type_tag(script, TAG_DYNAMIC);			// NOTE: okay, so it must be a dynamic literal
 						break;										// NOTE: also, we don't care about the types anymore
 					}
 					// error_defer_e(e, "Array literal value type does not match the array's contained type\n");
@@ -3007,8 +3001,8 @@ static void resolve_type_tags(void* vexp)
 		
 		case EXP_LEN:
 		{
-			exp->tag = create_type_tag(TAG_NUMBER);
-			resolve_type_tags(exp->len);
+			exp->tag = create_type_tag(script, TAG_NUMBER);
+			resolve_type_tags(script, exp->len);
 			
 			if(exp->len->tag->type != TAG_STRING && exp->len->tag->type != TAG_ARRAY)
 				error_defer_e(exp->len, "Attempted to find the length of non-measurable type\n");
@@ -3016,32 +3010,32 @@ static void resolve_type_tags(void* vexp)
 		
 		case EXP_IF:
 		{
-			exp->tag = create_type_tag(TAG_VOID);
-			resolve_type_tags(exp->ifx.cond);
+			exp->tag = create_type_tag(script, TAG_VOID);
+			resolve_type_tags(script, exp->ifx.cond);
 			
 			if(!is_type_tag(exp->ifx.cond->tag, TAG_BOOL))
 				error_defer_e(exp->ifx.cond, "Condition does not evaluate to a boolean value\n");
 			
-			resolve_type_tags(exp->ifx.body);
+			resolve_type_tags(script, exp->ifx.body);
 			if(exp->ifx.alt)
-				resolve_type_tags(exp->ifx.alt);
+				resolve_type_tags(script, exp->ifx.alt);
 		} break;
 		
 		case EXP_WHILE:
 		{
-			exp->tag = create_type_tag(TAG_VOID);
-			resolve_type_tags(exp->whilex.cond);
+			exp->tag = create_type_tag(script, TAG_VOID);
+			resolve_type_tags(script, exp->whilex.cond);
 			
 			if(!is_type_tag(exp->whilex.cond->tag, TAG_BOOL)) 
 				error_defer_e(exp->whilex.cond, "Condition does not evaluate to a boolean value\n");
 			
-			resolve_type_tags(exp->whilex.body);
+			resolve_type_tags(script, exp->whilex.body);
 		} break;
 		
 		case EXP_RETURN:
 		{
-			exp->tag = create_type_tag(TAG_VOID);
-			resolve_type_tags(exp->retx.value);
+			exp->tag = create_type_tag(script, TAG_VOID);
+			resolve_type_tags(script, exp->retx.value);
 	
 			if(!compare_type_tags(exp->retx.value->tag, exp->retx.parent->tag->func.return_type))
 				error_defer_e(exp, "Returned value's type does not match the return type of the enclosing function.\n");
@@ -3049,8 +3043,8 @@ static void resolve_type_tags(void* vexp)
 		
 		case EXP_FUNC:
 		{
-			exp->tag = create_type_tag(TAG_VOID);
-			resolve_type_tags(exp->funcx.body);
+			exp->tag = create_type_tag(script, TAG_VOID);
+			resolve_type_tags(script, exp->funcx.body);
 		} break;
 	}
 }
@@ -3129,7 +3123,7 @@ static void compile_value_expr(script_t* script, expr_t* exp)
 		case EXP_STRUCT_NEW:
 		{
 			// NOTE: VLA keeping track of which members have been initialized
-			char initialized_members[exp->newx.type->ds.members.length];
+			char* initialized_members = emalloc(exp->newx.type->ds.members.length);
 			memset(initialized_members, 0, exp->newx.type->ds.members.length);
 			
 			int num_init = 0;
@@ -3179,6 +3173,8 @@ static void compile_value_expr(script_t* script, expr_t* exp)
 			else
 				append_int(script, exp->newx.type->ds.members.length);
 			append_int(script, num_init);
+			
+			free(initialized_members);
 		} break;
 		
 		case EXP_DOT:
@@ -3267,7 +3263,7 @@ static void compile_value_expr(script_t* script, expr_t* exp)
 			else
 			{
 				// NOTE: This assumes resolve_symbols checked for a function reference existing
-				func_decl_t* decl = reference_function(exp->varx.name);
+				func_decl_t* decl = reference_function(script, exp->varx.name);
 				
 				// TODO: Switch here
 				if(decl->type == DECL_FUNCTION) append_code(script, OP_PUSH_FUNC);
@@ -3532,7 +3528,15 @@ static void compile_expr(script_t* script, expr_t* exp)
 static void allocate_globals(script_t* script)
 {
 	script_value_t* val = NULL;
-	vec_resize(&script->globals, g_globals.length, &val);
+	
+	int num_globals = 0;
+	for (int i = 0; i < script->modules.length; ++i)
+	{
+		script_module_t* module = vec_get(&script->modules, i);
+		num_globals += module->globals.length;
+	}
+
+	vec_resize(&script->globals, num_globals, &val);
 }
 
 void script_bind_extern(script_t* script, const char* name, script_extern_t ext)
@@ -3546,6 +3550,51 @@ void script_bind_extern(script_t* script, const char* name, script_extern_t ext)
 
 // NOTE: Fancy compile-time externs
 #define EXT_CHECK_IF_CT(name) if(g_cur_module_index < 0) error_exit_script(script, "Attempted to call compile-time function '" name "' at runtime\n");
+
+static void ext_add_module(script_t* script, vector_t* args)
+{
+	script_value_t* name_val = script_get_arg(args, 0);
+	script_value_t* code_val = script_get_arg(args, 1);
+	
+	const char* name = name_val->string.data;
+	const char* code = code_val->string.data;
+	
+	script_parse_code(script, code, name);
+	script_push_number(script, script->modules.length - 1);
+	script_return_top(script);
+}
+
+static void compile_module(script_t* script, script_module_t* module);
+static void ext_compile_module(script_t* script, vector_t* args)
+{
+	append_code(script, OP_HALT);
+	
+	script_value_t* idx_val = script_get_arg(args, 0);
+	int module_index = (int)idx_val->number;
+	
+	script_module_t* module = vec_get(&script->modules, module_index);
+	compile_module(script, module);
+}
+
+static void execute_cycle(script_t* script);
+static void ext_run_module(script_t* script, vector_t* args)
+{
+	script_value_t* idx_val = script_get_arg(args, 0);
+	int module_index = (int)idx_val->number;
+	
+	script_module_t* module = vec_get(&script->modules, module_index);
+
+	if(!module->compiled)
+		error_exit_script(script, "Attempting to run an uncompiled module '%s'\n", module->local_path);
+
+	int pc = script->pc;
+	script->pc = module->start_pc;
+	
+	while(script->pc >= 0 && script->pc < module->end_pc)
+		execute_cycle(script);
+	
+	script->pc = pc;
+}
 
 static void ext_get_current_module_index(script_t* script, vector_t* args)
 {
@@ -3649,7 +3698,7 @@ static void ext_create_bool_type(script_t* script, vector_t* args)
 {
 	EXT_CHECK_IF_CT("create_bool_type");
 	
-	script_push_native(script, create_type_tag(TAG_BOOL), NULL, NULL);
+	script_push_native(script, create_type_tag(script, TAG_BOOL), NULL, NULL);
 	script_return_top(script);
 }
 
@@ -3657,7 +3706,7 @@ static void ext_create_char_type(script_t* script, vector_t* args)
 {
 	EXT_CHECK_IF_CT("create_char_type");
 	
-	script_push_native(script, create_type_tag(TAG_CHAR), NULL, NULL);
+	script_push_native(script, create_type_tag(script, TAG_CHAR), NULL, NULL);
 	script_return_top(script);
 }
 
@@ -3665,7 +3714,7 @@ static void ext_create_number_type(script_t* script, vector_t* args)
 {
 	EXT_CHECK_IF_CT("create_number_type");
 	
-	script_push_native(script, create_type_tag(TAG_NUMBER), NULL, NULL);
+	script_push_native(script, create_type_tag(script, TAG_NUMBER), NULL, NULL);
 	script_return_top(script);
 }
 
@@ -3673,7 +3722,7 @@ static void ext_create_string_type(script_t* script, vector_t* args)
 {
 	EXT_CHECK_IF_CT("create_string_type");
 	
-	script_push_native(script, create_type_tag(TAG_STRING), NULL, NULL);
+	script_push_native(script, create_type_tag(script, TAG_STRING), NULL, NULL);
 	script_return_top(script);
 }
 
@@ -3684,7 +3733,7 @@ static void ext_create_array_type(script_t* script, vector_t* args)
 	script_value_t* contained_val = script_get_arg(args, 0);
 	type_tag_t* contained = contained_val->nat.value;
 	
-	type_tag_t* array = create_type_tag(TAG_ARRAY);
+	type_tag_t* array = create_type_tag(script, TAG_ARRAY);
 	array->contained = contained;
 	
 	script_push_native(script, array, NULL, NULL);
@@ -3698,7 +3747,7 @@ static void ext_create_function_type(script_t* script, vector_t* args)
 	script_value_t* return_type_val = script_get_arg(args, 0);
 	script_value_t* arg_types_val = script_get_arg(args, 1);
 	
-	type_tag_t* tag = create_type_tag(TAG_FUNC);
+	type_tag_t* tag = create_type_tag(script, TAG_FUNC);
 	tag->func.return_type = return_type_val->nat.value;
 	for(int i = 0; i < arg_types_val->array.length; ++i)
 	{
@@ -3716,7 +3765,7 @@ static void ext_create_native_type(script_t* script, vector_t* args)
 {
 	EXT_CHECK_IF_CT("create_native_type");
 		
-	script_push_native(script, create_type_tag(TAG_NATIVE), NULL, NULL);
+	script_push_native(script, create_type_tag(script, TAG_NATIVE), NULL, NULL);
 	script_return_top(script);
 }
 
@@ -3724,7 +3773,7 @@ static void ext_create_dynamic_type(script_t* script, vector_t* args)
 {
 	EXT_CHECK_IF_CT("create_dynamic_type");
 	
-	script_push_native(script, create_type_tag(TAG_DYNAMIC), NULL, NULL);
+	script_push_native(script, create_type_tag(script, TAG_DYNAMIC), NULL, NULL);
 	script_return_top(script);
 }
 
@@ -3732,7 +3781,7 @@ static void ext_create_void_type(script_t* script, vector_t* args)
 {
 	EXT_CHECK_IF_CT("create_void_type");
 	
-	script_push_native(script, create_type_tag(TAG_VOID), NULL, NULL);
+	script_push_native(script, create_type_tag(script, TAG_VOID), NULL, NULL);
 	script_return_top(script);
 }
 
@@ -3743,7 +3792,7 @@ static void ext_reference_func(script_t* script, vector_t* args)
 	script_value_t* name_val = script_get_arg(args, 0);
 	const char* name = name_val->string.data;
 	
-	func_decl_t* decl = reference_function(name);
+	func_decl_t* decl = reference_function(script, name);
 	if(decl)
 		script_push_native(script, decl, NULL, NULL);
 	else
@@ -3785,7 +3834,7 @@ static void ext_declare_variable(script_t* script, vector_t* args)
 	g_cur_func = decl;
 	g_scope = scope;
 	
-	script_push_native(script, declare_variable(name, tag), NULL, NULL);
+	script_push_native(script, declare_variable(script, name, tag), NULL, NULL);
 	script_return_top(script);
 }
 
@@ -3810,7 +3859,7 @@ static void ext_reference_variable(script_t* script, vector_t* args)
 	g_cur_func = decl;
 	g_scope = scope;
 	
-	var_decl_t* vdecl = reference_variable(name);
+	var_decl_t* vdecl = reference_variable(script, name);
 	if(!vdecl)
 		error_exit_script(script, "Attempted to reference non-existent variable '%s'\n", name);
 	else
@@ -4086,6 +4135,10 @@ static void ext_u8_buffer_to_string(script_t* script, vector_t* args)
 
 static void bind_default_externs(script_t* script)
 {
+	script_bind_extern(script, "add_module", ext_add_module);
+	script_bind_extern(script, "compile_module", ext_compile_module);
+	script_bind_extern(script, "run_module", ext_run_module);
+	
 	script_bind_extern(script, "get_current_module_index", ext_get_current_module_index);
 	script_bind_extern(script, "get_module_source_code", ext_get_module_source_code);
 	script_bind_extern(script, "get_module_expr_list", ext_get_module_expr_list);
@@ -4146,9 +4199,6 @@ void script_init(script_t* script)
 {
 	g_line = 1;
 	g_file = "none";
-
-	init_type_tags();
-	init_symbols();
 
 	script->in_extern = 0;
 	
@@ -4240,7 +4290,7 @@ static void delete_value(script_t* script, script_value_t* val, char insert_into
 		case VAL_NUMBER:
 		case VAL_FUNC: break;
 		
-		case VAL_STRING: free(val->string.data); break;
+		case VAL_STRING: free(val->string.data); val->string.data = NULL; break;
 		case VAL_ARRAY: vec_destroy(&val->array); break;
 		case VAL_STRUCT_INSTANCE: vec_destroy(&val->ds.members); break;
 		case VAL_NATIVE: if(val->nat.on_delete) val->nat.on_delete(val->nat.value); break;
@@ -4257,18 +4307,19 @@ static void delete_value(script_t* script, script_value_t* val, char insert_into
 
 static void destroy_all_values(script_t* script)
 {
+	// TODO: There is a double free somewhere here
+	while (script->free_list)
+	{
+		script_value_t* next = script->free_list->next;
+		delete_value(script, script->free_list, 0);
+		script->free_list = next;
+	}
+
 	while(script->gc_head)
 	{
 		script_value_t* next = script->gc_head->next;
 		delete_value(script, script->gc_head, 0);
 		script->gc_head = next;
-	}
-	
-	while(script->free_list)
-	{
-		script_value_t* next = script->free_list->next;
-		delete_value(script, script->free_list, 0);
-		script->free_list = next;
 	}
 }
 
@@ -4281,6 +4332,11 @@ static void destroy_modules(void* p_module)
 		delete_expr(vec_get_value(&module->expr_list, i, expr_t*));
 	vec_destroy(&module->expr_list);
 	vec_destroy(&module->compile_time_funcs);
+
+	vec_destroy(&module->globals);
+	vec_destroy(&module->functions);
+	vec_destroy(&module->all_type_tags);
+	map_destroy(&module->user_type_tags);
 }
 
 void script_reset(script_t* script)
@@ -4915,7 +4971,12 @@ static char compare_values(script_value_t* a, script_value_t* b)
 static void execute_cycle(script_t* script)
 {
 	if(script->pc < 0) return;
-	
+	if (script->pc >= script->code.length)
+	{
+		script->pc = -1;
+		return;
+	}
+
 	word code = vec_get_value(&script->code, script->pc, word);
 	++script->pc;
 	
@@ -5252,6 +5313,9 @@ static void execute_cycle(script_t* script)
 			script->pc = -1;
 		} break;
 	}
+	
+	if(script->pc >= script->code.length)
+		script->pc = -1;
 }
 
 void script_load_parse_file(script_t* script, const char* filename)
@@ -5261,7 +5325,6 @@ void script_load_parse_file(script_t* script, const char* filename)
 	if(!in)
 		error_exit("Failed to open file '%s'\n", filename);
 	
-	g_file = filename;
 	script_parse_file(script, in, filename);
 
 	fclose(in);
@@ -5286,21 +5349,22 @@ void script_parse_file(script_t* script, FILE* in, const char* module_name)
 
 void script_parse_code(script_t* script, const char* code, const char* module_name)
 {
+	g_file = module_name;
 	g_code = code;
 	g_line = 1;
 	
-	reset_type_tags();
-	reset_symbols();
-	
 	// NOTE: adding the current module in and parsing it
-	int current_module_index = script->modules.length;
-	add_module(script, module_name, code);
-		
+	int current_module_index = add_module(script, module_name, code);
+
 	script_module_t* module = vec_get(&script->modules, current_module_index);
-	g_cur_module_index = current_module_index;
-	parse_program(script, &module->expr_list);
-	module->parsed = 1;
 	
+	if (!module->parsed)
+	{
+		g_cur_module_index = current_module_index;
+		parse_program(script, &module->expr_list);
+		module->parsed = 1;
+	}
+
 	// NOTE: parse any unparsed modules
 	for(int i = 0; i < script->modules.length; ++i)
 	{
@@ -5356,33 +5420,22 @@ void script_parse_code(script_t* script, const char* code, const char* module_na
 	if(g_has_error) error_exit("Found errors in script code. Stopping compilation\n");
 }
 
-void script_compile(script_t* script)
+void script_disable_warning(script_warning_t warning, char disabled)
+{
+	g_warning_disabled[(int)warning] = disabled;
+}
+
+static void compile_module(script_t* script, script_module_t* module)
 {
 	char symbol_error = 0;
 	
-	// NOTE: modules are compiled in reverse order
-	// because that's how the dependencies work out
-	// ex.
-	/* in file a:
-	 * #import "b"
-	 * some_function_in_b()
-	 * 
-	 * in file b:
-	 * var important_global_variable : something = something
-	 * 
-	 * func some_function_in_b() { do_something(important_global_variable); }
-	 * 
-	 * ^ that will likely crash if b code is run after a code cause the 'important_global_variable' is uninitialized
-	 */ 
-	for(int i = script->modules.length - 1; i >= 0; --i)
+	if(!module->compiled)
 	{
-		script_module_t* module = vec_get(&script->modules, i);
-		
 		module->start_pc = script->code.length;
 		
 		// NOTE: this happens twice, once before and once after
-		check_all_tags_defined();
-		finalize_types();
+		check_all_tags_defined(script);
+		finalize_types(script);
 		
 		// TODO: check all the types and definitions on this functions
 		// and the types they reference
@@ -5396,9 +5449,9 @@ void script_compile(script_t* script)
 			expr_t* exp = vec_get_value(&module->compile_time_funcs, i, expr_t*);		
 			
 			char prev_error = g_has_error;
-			resolve_symbols(exp);
+			resolve_symbols(script, exp);
 			symbol_error = prev_error ? 0 : g_has_error;
-			if(!symbol_error) resolve_type_tags(exp);
+			if(!symbol_error) resolve_type_tags(script, exp);
 		
 			//debug_expr(script, node);
 			//printf("\n");
@@ -5418,17 +5471,17 @@ void script_compile(script_t* script)
 		
 		vec_resize(&script->code, module->start_pc, NULL);
 
-		check_all_tags_defined();
-		finalize_types();
+		check_all_tags_defined(script);
+		finalize_types(script);
 		
 		for(int expr_index = 0; expr_index < module->expr_list.length; ++expr_index)
 		{
 			expr_t* node = vec_get_value(&module->expr_list, expr_index, expr_t*);
 		
 			char prev_error = g_has_error;
-			resolve_symbols(node);
+			resolve_symbols(script, node);
 			symbol_error = prev_error ? 0 : g_has_error;
-			if(!symbol_error) resolve_type_tags(node);
+			if(!symbol_error) resolve_type_tags(script, node);
 		
 			//debug_expr(script, node);
 			//printf("\n");
@@ -5437,11 +5490,33 @@ void script_compile(script_t* script)
 		}
 		
 		module->end_pc = script->code.length;
+		module->compiled = 1;
+	}
+}
+
+void script_compile(script_t* script)
+{
+	// NOTE: modules are compiled in reverse order
+	// because that's how the dependencies work out
+	// ex.
+	/* in file a:
+	 * #import "b"
+	 * some_function_in_b()
+	 * 
+	 * in file b:
+	 * var important_global_variable : something = something
+	 * 
+	 * func some_function_in_b() { do_something(important_global_variable); }
+	 * 
+	 * ^ that will likely crash if b code is run after a code cause the 'important_global_variable' is uninitialized
+	 */ 
+	for(int i = script->modules.length - 1; i >= 0; --i)
+	{
+		script_module_t* module = vec_get(&script->modules, i);
+		compile_module(script, module);
 	}
 	
 	if(g_has_error) error_exit("Found errors in script code. Stopping compilation\n");
-	
-	append_code(script, OP_HALT);
 }
 
 void script_dissassemble(script_t* script, FILE* out)
@@ -5461,6 +5536,26 @@ void script_run(script_t* script)
 	script->pc = 0;
 	while(script->pc >= 0)
 		execute_cycle(script);
+}
+
+void script_start(script_t* script)
+{
+	allocate_globals(script);
+	vec_clear(&script->stack);
+	
+	g_cur_module_index = -1;
+
+	script->pc = 0;
+}
+
+void script_execute_cycle(script_t* script)
+{
+	execute_cycle(script);
+}
+
+void script_stop(script_t* script)
+{
+	script->pc = -1;
 }
 
 static void read_console_input(char* buf, size_t length)
@@ -5710,9 +5805,6 @@ void script_destroy(script_t* script)
 {
 	vec_traverse(&script->modules, destroy_modules);
 	vec_destroy(&script->modules);
-	
-	destroy_type_tags();
-	destroy_symbols();
 	
 	destroy_all_values(script);
 	

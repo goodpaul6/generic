@@ -17,6 +17,8 @@ int main(int argc, char* argv[])
 	
 	script_init(&script);
 	
+	script_disable_warning(WARN_DYNAMIC_ARRAY_LITERAL, 1);
+	
 	script_load_parse_file(&script, "test.txt");
 	script_compile(&script);
 	

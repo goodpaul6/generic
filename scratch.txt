@@ -1,4 +1,6 @@
 TODO:
+- ALSO MAKE SURE TO FREE ALL THE TYPE TAG DATA AND SHIT IN THE MODULES
+
 - OMG warnings should have better location information somehow (ex. WARN_ARRAY_DYNAMIC_TO_SPECIFIC)
 
 - there should be some context set for expressions generated in compile-time functions
@@ -62,8 +64,6 @@ NOTES:
 - 'using' in structs adds members to the *end* of the struct, never the beginning, regardless of where it appears inside the struct decl		
 
 ISSUES:
-- running the vm 100000 times causes some double frees and unaddressable accesses
-
 - Discrepancy in function syntax using ':'
 
 	exhibit A:
