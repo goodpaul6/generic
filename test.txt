@@ -1,1 +1,8 @@
+#import "basic.txt"
 
+func printf(fmt : string, args : array-dynamic) : void
+{
+	write format_string(fmt, args)
+}
+
+printf("Welcome to generic!", [] : dynamic)

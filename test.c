@@ -18,6 +18,7 @@ int main(int argc, char* argv[])
 	script_init(&script);
 	
 	script_disable_warning(WARN_DYNAMIC_ARRAY_LITERAL, 1);
+	script_disable_warning(WARN_ARRAY_DYNAMIC_TO_SPECIFIC, 1);
 	
 	script_load_parse_file(&script, "test.txt");
 	script_compile(&script);
@@ -43,7 +44,7 @@ int main(int argc, char* argv[])
 	msec.QuadPart *= 1000000;
 	msec.QuadPart /= freq.QuadPart;
 	
-	printf("It took %u us to run\n", msec.QuadPart);
+	printf("It took %llu us to run\n", msec.QuadPart);
 	
 	script_destroy(&script);
 

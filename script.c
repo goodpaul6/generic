@@ -62,7 +62,6 @@ typedef struct type_tag
 			size_t size;			// NOTE: size of struct in members
 			vector_t using;
 			vector_t members;
-			vector_t functions;
 		} ds;
 	};
 } type_tag_t;
@@ -320,13 +319,6 @@ typedef struct expr
 	};
 } expr_t;
 
-typedef struct
-{
-	char* name;
-	func_decl_t* decl;
-	expr_t* body;
-} type_mem_fn_t;
-
 static const char* g_token_names[NUM_TOKENS] = {
 	"#",
 	
@@ -566,7 +558,11 @@ static void write_value(script_value_t* val)
 			printf("[");
 			for(int i = 0; i < val->array.length; ++i)
 			{
-				write_value(vec_get_value(&val->array, i, script_value_t*));
+				script_value_t* mem = vec_get_value(&val->array, i, script_value_t*);
+				if (val == mem)
+					printf("__self__");
+				else
+					write_value(mem);
 				if(i + 1 < val->array.length) printf(", ");
 			}
 			printf("]");
@@ -576,7 +572,11 @@ static void write_value(script_value_t* val)
 			printf("{ ");
 			for(int i = 0; i < val->ds.members.length; ++i)
 			{
-				write_value(vec_get_value(&val->ds.members, i, script_value_t*));
+				script_value_t* mem = vec_get_value(&val->ds.members, i, script_value_t*);
+				if (val == mem)
+					printf("__self__");
+				else
+					write_value(mem);
 				if(i + 1 < val->ds.members.length) printf(", ");
 			}
 			printf(" }");
@@ -653,14 +653,9 @@ static void delete_expr(expr_t* exp)
 				vec_destroy(&exp->newx.init);
 			} break;
 			
-			case EXP_STRUCT_DECL:
-			{	
-				for(int i = 0; i < exp->struct_tag->ds.functions.length; ++i)
-				{
-					type_mem_fn_t* mem = vec_get(&exp->struct_tag->ds.functions, i);
-					delete_expr(mem->body);
-				}
-			} break;
+			// NOTE: Nothing is destroyed here because the expressions will be deleted in the 
+			// delete_type_tag function
+			case EXP_STRUCT_DECL: break;
 			
 			case EXP_NULL:
 			case EXP_EXTERN:
@@ -785,7 +780,6 @@ static type_tag_t* create_type_tag(script_t* script, tag_t type)
 			tag->ds.size = 0;
 			vec_init(&tag->ds.using, sizeof(type_tag_t*));
 			vec_init(&tag->ds.members, sizeof(type_tag_member_t));
-			vec_init(&tag->ds.functions, sizeof(type_mem_fn_t));
 		} break;
 		
 		default: break;
@@ -918,16 +912,9 @@ static void destroy_type_tag(void* vtag)
 				if(mem->default_value)
 					delete_expr(mem->default_value);
 			}
-			
-			for(int i = 0; i < tag->ds.functions.length; ++i)
-			{
-				type_mem_fn_t* mem = vec_get(&tag->ds.functions, i);
-				free(mem->name);
-			}
 				
 			vec_destroy(&tag->ds.using);
 			vec_destroy(&tag->ds.members);
-			vec_destroy(&tag->ds.functions);
 		} break;
 		
 		default: break;
@@ -1846,13 +1833,6 @@ static expr_t* parse_struct(script_t* script)
 			get_next_token();
 			decl->tag->func.return_type = parse_type_tag(script);
 		
-			type_mem_fn_t mem;
-			mem.name = name;
-			mem.decl = decl;
-			mem.body = parse_expr(script);
-			
-			vec_push_back(&tag->ds.functions, &mem);
-			
 			free(buf);
 			exit_function();
 		}
@@ -2404,12 +2384,6 @@ static void resolve_symbols(script_t* script, expr_t* exp)
 				if(mem->default_value)
 					resolve_symbols(script, mem->default_value);
 			}
-			
-			for(int i = 0; i < exp->struct_tag->ds.functions.length; ++i)
-			{
-				type_mem_fn_t* mem = vec_get(&exp->struct_tag->ds.functions, i);
-				resolve_symbols(script, mem->body);
-			}
 		} break;
 		
 		case EXP_NULL:
@@ -2700,7 +2674,32 @@ static void finalize_types(script_t* script)
 	}
 }
 
-static int get_struct_type_member_index(type_tag_t* tag, const char* name, char* is_function);
+static func_decl_t* get_struct_member_function(script_t* script, const char* struct_name, const char* func_name)
+{
+	size_t la = strlen(struct_name);
+	size_t length = la + strlen(func_name) + 2;
+	type_tag_t* struct_tag = get_user_type_tag_from_name(script, struct_name);
+	if (!struct_tag) return NULL;
+
+	// NOTE: Stores (struct_name)_(func_name)
+	// which is ultimately the name of the member function
+	// in the global scope
+	char* buf = emalloc(length);
+
+	strcpy(buf, struct_name);
+	buf[la] = '_';
+	strcpy(buf + la + 1, func_name);
+
+	func_decl_t* result = reference_function(script, buf);
+	free(buf);
+
+	if (result && (result->args.length < 1 || !compare_type_tags(vec_get_value(&result->args, 0, var_decl_t*)->tag, struct_tag)))
+		return NULL;
+
+	return result;
+}
+
+static int get_struct_type_member_index(type_tag_t* tag, const char* name);
 // TODO: Add type names to error messages
 // NOTE: resolve_symbols before this
 static void resolve_type_tags(script_t* script, void* vexp)
@@ -2735,23 +2734,16 @@ static void resolve_type_tags(script_t* script, void* vexp)
 				}
 			}
 			
-			for(int i = 0; i < tag->ds.functions.length; ++i)
+			if (!found)
 			{
-				type_mem_fn_t* mem = vec_get(&tag->ds.functions, i);
-				if(strcmp(mem->name, exp->dotx.name) == 0)
-				{
-					exp->tag = mem->decl->tag;
-					found = 1;
-					
-					if(exp->type == EXP_DOT) error_defer_e(exp, "Attempted to use '.' operator to access member function; use ':' instead\n");
-					break;
-				}
-			}
-			
-			if(!found)
-			{
-				error_defer_e(exp, "Attempted to access non-existent member '%s' in struct %s\n", exp->dotx.name, tag->ds.name);
-				exp->tag = create_type_tag(script, TAG_VOID); // NOTE: only you can prevent crashes
+				func_decl_t* decl = get_struct_member_function(script, exp->dotx.value->tag->ds.name, exp->dotx.name);
+				if (decl) found = 1;
+				if (exp->type == EXP_DOT) error_defer_e(exp, "Attempted to use '.' operator to access member function; use ':' instead\n");
+
+				if (!found)
+					error_exit_e(exp, "Attempted to access non-existent member '%s' in struct %s\n", exp->dotx.name, tag->ds.name);
+				else
+					exp->tag = decl->tag;
 			}
 		} break;
 		
@@ -2774,12 +2766,6 @@ static void resolve_type_tags(script_t* script, void* vexp)
 						error_defer_e(mem->default_value, "Type of default value does not match type of member variable '%s'\n", mem->name);
 				}
 			}
-			
-			for(int i = 0; i < exp->struct_tag->ds.functions.length; ++i)
-			{
-				type_mem_fn_t* mem = vec_get(&exp->struct_tag->ds.functions, i);
-				resolve_type_tags(script, mem->body);
-			}
 		} break;
 		
 		case EXP_STRUCT_NEW:
@@ -2790,16 +2776,12 @@ static void resolve_type_tags(script_t* script, void* vexp)
 			{
 				expr_t* init = vec_get_value(&exp->newx.init, i, expr_t*);
 				
-				char is_function;
-				int member_index = get_struct_type_member_index(exp->newx.type, init->binx.lhs->varx.name, &is_function);
-				if(!is_function) // NOTE: This is an error later if this condition is not met
-				{
-					resolve_type_tags(script, init->binx.rhs);
+				int member_index = get_struct_type_member_index(exp->newx.type, init->binx.lhs->varx.name);
+				resolve_type_tags(script, init->binx.rhs);
 					
-					type_tag_member_t* mem = vec_get(&exp->newx.type->ds.members, member_index);
-					if(!compare_type_tags(init->binx.rhs->tag, mem->type))
-						error_defer_e(init->binx.rhs, "Type of initializer does not match type of member '%s' being initialized\n", mem->name);
-				}
+				type_tag_member_t* mem = vec_get(&exp->newx.type->ds.members, member_index);
+				if(!compare_type_tags(init->binx.rhs->tag, mem->type))
+					error_defer_e(init->binx.rhs, "Type of initializer does not match type of member '%s' being initialized\n", mem->name);
 			}
 		} break;
 			
@@ -3052,18 +3034,27 @@ static void resolve_type_tags(script_t* script, void* vexp)
 static void compile_value_expr(script_t* script, expr_t* exp);
 static void compile_call(script_t* script, expr_t* exp)
 {
+	int nargs = exp->callx.args.length;
+
+	if (exp->callx.func->type == EXP_COLON)
+	{
+		compile_value_expr(script, exp->callx.func->dotx.value);
+		nargs += 1;
+	}
+
 	for(int i = exp->callx.args.length - 1; i >= 0; --i)
 	{
 		expr_t* e = vec_get_value(&exp->callx.args, i, expr_t*);
 		compile_value_expr(script, e);
-	}		
+	}
 
 	compile_value_expr(script, exp->callx.func);
+	
 	append_code(script, OP_CALL);
-	append_code(script, exp->callx.args.length);
+	append_code(script, nargs);
 }
 
-static int get_struct_type_member_index(type_tag_t* tag, const char* name, char* is_function)
+static int get_struct_type_member_index(type_tag_t* tag, const char* name)
 {
 	// NOTE: In unions, all members are located at the same index (0)
 	if(tag->ds.is_union)
@@ -3073,20 +3064,7 @@ static int get_struct_type_member_index(type_tag_t* tag, const char* name, char*
 	{
 		type_tag_member_t* mem = vec_get(&tag->ds.members, i);
 		if(strcmp(mem->name, name) == 0)
-		{
-			*is_function = 0;
 			return mem->index;
-		}
-	}
-	
-	for(int i = 0; i < tag->ds.functions.length; ++i)
-	{
-		type_mem_fn_t* mem = vec_get(&tag->ds.functions, i);
-		if(strcmp(mem->name, name) == 0)
-		{
-			*is_function = 1;
-			return i;
-		}
 	}
 	
 	return -1;
@@ -3195,18 +3173,12 @@ static void compile_value_expr(script_t* script, expr_t* exp)
 
 		case EXP_COLON:
 		{
-			char is_function = 0;
-			int index = get_struct_type_member_index(exp->dotx.value->tag, exp->dotx.name, &is_function);
-			if(index < 0) error_exit_e(exp, "Attempted to access non-existent member '%s' in struct %s\n", exp->dotx.name, exp->dotx.value->tag->ds.name);
-			
-			if(is_function)
-			{
-				append_code(script, OP_PUSH_FUNC);
-				type_mem_fn_t* mem = vec_get(&exp->dotx.value->tag->ds.functions, index);
-				append_int(script, mem->decl->index);
-			}
-			else
-				error_exit_e(exp, "Attempted to access member value with ':' operator; use '.' operator instead\n");
+			func_decl_t* decl = get_struct_member_function(script, exp->dotx.value->tag->ds.name, exp->dotx.name);
+			if (!decl)
+				error_exit_e(exp, "Value of type '%s' has no member function '%s'\n", exp->dotx.value->tag->ds.name, exp->dotx.name);
+
+			append_code(script, OP_PUSH_FUNC);
+			append_int(script, decl->index);
 		} break;
 			
 		case EXP_BOOL:
@@ -3372,10 +3344,8 @@ static void compile_assign(script_t* script, expr_t* exp)
 		
 		case EXP_DOT:
 		{
-			char is_function = 0;
-			int index = get_struct_type_member_index(exp->dotx.value->tag, exp->dotx.name, &is_function);
-			if(index < 0) error_exit_e(exp, "Attempted to access non-existent member '%s' in struct %s\n", exp->dotx.name, exp->dotx.value->tag->ds.name);
-			if(is_function) error_exit_e(exp, "Attempted to assign to member function '%s' of struct %s\n", exp->dotx.name, exp->dotx.value->tag->ds.name);
+			int index = get_struct_type_member_index(exp->dotx.value->tag, exp->dotx.name);
+			if (index < 0) error_exit_e(exp, "Attempted to access non-existent member '%s' in struct '%s'\n", exp->dotx.name, exp->dotx.value->tag->ds.name);
 			
 			compile_value_expr(script, exp->dotx.value);
 			append_code(script, OP_STRUCT_SET);
@@ -3395,28 +3365,6 @@ static void compile_expr(script_t* script, expr_t* exp)
 	switch(exp->type)
 	{
 		case EXP_STRUCT_DECL:
-		{
-			for(int i = 0; i < exp->struct_tag->ds.functions.length; ++i)
-			{
-				type_mem_fn_t* mem = vec_get(&exp->struct_tag->ds.functions, i);
-				
-				// NOTE: Copied from case EXP_FUNC
-				append_code(script, OP_GOTO);
-				int loc = script->code.length;
-				append_int(script, 0);
-				
-				vec_push_back(&script->function_pcs, &script->code.length);
-				
-				for(int i = 0; i < mem->decl->locals.length; ++i)
-					append_code(script, OP_PUSH_NULL);
-				
-				compile_expr(script, mem->body);
-				
-				append_code(script, OP_RETURN);
-				patch_int(script, loc, script->code.length);
-			}
-		} break;
-		
 		case EXP_EXTERN:
 		case EXP_VAR:
 		{

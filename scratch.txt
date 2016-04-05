@@ -1,6 +1,21 @@
 TODO:
 - ALSO MAKE SURE TO FREE ALL THE TYPE TAG DATA AND SHIT IN THE MODULES
 
+- See Following:
+	struct vec2
+	{
+		x : number
+		y : number
+	}
+	
+	func vec2_set(x : number, y : number) : void
+	{
+	}
+	
+	var v : vec2 = new vec2
+	v:set(10, 20) // Compiler says that no 'set' method exists, but those are LIES IT DOES EXIST IT JUST DOESN'T TAKE THE RIGHT ARGS
+				  // FIX THIS
+
 - OMG warnings should have better location information somehow (ex. WARN_ARRAY_DYNAMIC_TO_SPECIFIC)
 
 - there should be some context set for expressions generated in compile-time functions
