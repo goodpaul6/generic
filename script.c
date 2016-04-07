@@ -132,6 +132,7 @@ enum
 	TOK_TRUE,
 	TOK_FALSE,
 	TOK_WHILE,
+	TOK_FOR,
 	TOK_ELSE,
 	TOK_IF,
 	TOK_RETURN,
@@ -165,6 +166,8 @@ enum
 	TOK_MINUS,
 	TOK_MUL,
 	TOK_DIV,
+	TOK_MOD,
+
 	TOK_LT,
 	TOK_GT,
 	TOK_LTE,
@@ -213,7 +216,8 @@ typedef enum expr_type
 	
 	EXP_IF,
 	EXP_WHILE,
-	
+	EXP_FOR,
+
 	EXP_RETURN,
 	
 	EXP_EXTERN,
@@ -309,6 +313,14 @@ typedef struct expr
 		
 		struct
 		{
+			struct expr* init;
+			struct expr* cond;
+			struct expr* step;
+			struct expr* body;
+		} forx;
+
+		struct
+		{
 			func_decl_t* parent;
 			struct expr* value;
 		} retx;
@@ -342,6 +354,7 @@ static const char* g_token_names[NUM_TOKENS] = {
 	"true",
 	"false",
 	"while",
+	"for",
 	"else",
 	"if",
 	"return",
@@ -374,6 +387,8 @@ static const char* g_token_names[NUM_TOKENS] = {
 	"+",
 	"-",
 	"*",
+	"%",
+
 	"/",
 	"<",
 	">",
@@ -728,6 +743,14 @@ static void delete_expr(expr_t* exp)
 			{
 				delete_expr(exp->whilex.cond);
 				delete_expr(exp->whilex.body);
+			} break;
+
+			case EXP_FOR:
+			{
+				delete_expr(exp->forx.init);
+				delete_expr(exp->forx.cond);
+				delete_expr(exp->forx.step);
+				delete_expr(exp->forx.body);
 			} break;
 			
 			case EXP_RETURN:
@@ -1230,6 +1253,7 @@ static int get_token(char reset)
 		if(strcmp(g_lexeme, "true") == 0) return TOK_TRUE;
 		if(strcmp(g_lexeme, "false") == 0) return TOK_FALSE;
 		if(strcmp(g_lexeme, "while") == 0) return TOK_WHILE;
+		if (strcmp(g_lexeme, "for") == 0) return TOK_FOR;
 		if(strcmp(g_lexeme, "else") == 0) return TOK_ELSE;
 		if(strcmp(g_lexeme, "if") == 0) return TOK_IF;
 		if(strcmp(g_lexeme, "return") == 0) return TOK_RETURN;
@@ -1341,6 +1365,7 @@ static int get_token(char reset)
 	if(last_char == '-') return TOK_MINUS;
 	if(last_char == '*') return TOK_MUL;
 	if(last_char == '/') return TOK_DIV;
+	if (last_char == '%') return TOK_MOD;
 	
 	// NOTE: order of checking these is important
 	if(last_char == '=' && last == '=')
@@ -1667,6 +1692,27 @@ static expr_t* parse_while(script_t* script)
 	exp->whilex.cond = parse_expr(script);
 	exp->whilex.body = parse_expr(script);
 	
+	return exp;
+}
+
+static expr_t* parse_for(script_t* script)
+{
+	expr_t* exp = create_expr(EXP_FOR);
+	get_next_token();
+
+	exp->forx.init = parse_expr(script);
+
+	if (g_cur_tok != TOK_COMMA) error_exit_p("Expected ',' after for initializer\n");
+	get_next_token();
+
+	exp->forx.cond = parse_expr(script);
+	
+	if (g_cur_tok != TOK_COMMA) error_exit_p("Expected ',' after for condition\n");
+	get_next_token();
+
+	exp->forx.step = parse_expr(script);
+	exp->forx.body = parse_expr(script);
+
 	return exp;
 }
 
@@ -1997,6 +2043,7 @@ static expr_t* parse_factor(script_t* script)
 		case TOK_OPENCURLY: return parse_block(script);
 		case TOK_IF: return parse_if(script);
 		case TOK_WHILE: return parse_while(script);
+		case TOK_FOR: return parse_for(script);
 		case TOK_FUNC: return parse_func(script);
 		case TOK_NUMBER: return parse_number(script);
 		case TOK_STRING: return parse_string(script);
@@ -2023,7 +2070,7 @@ static int get_prec(int op)
 		case TOK_LAND: case TOK_LOR: return 1;
 		case TOK_LT: case TOK_GT: case TOK_LTE: case TOK_GTE: case TOK_EQUALS: case TOK_NOTEQUAL: return 2;
 		case TOK_PLUS: case TOK_MINUS: return 3;
-		case TOK_MUL: case TOK_DIV: return 4;
+		case TOK_MUL: case TOK_DIV: case TOK_MOD: return 4;
 	
 		default:
 			return -1;
@@ -2473,6 +2520,14 @@ static void resolve_symbols(script_t* script, expr_t* exp)
 			resolve_symbols(script, exp->whilex.body);
 		} break;
 		
+		case EXP_FOR:
+		{
+			resolve_symbols(script, exp->forx.init);
+			resolve_symbols(script, exp->forx.cond);
+			resolve_symbols(script, exp->forx.step);
+			resolve_symbols(script, exp->forx.body);
+		} break;
+
 		case EXP_RETURN:
 		{
 			if(exp->retx.value)
@@ -2893,7 +2948,8 @@ static void resolve_type_tags(script_t* script, void* vexp)
 				case TOK_PLUS:
 				case TOK_MINUS:
 				case TOK_MUL:
-				case TOK_DIV: exp->tag = create_type_tag(script, TAG_NUMBER); break;
+				case TOK_DIV: 
+				case TOK_MOD: exp->tag = create_type_tag(script, TAG_NUMBER); break;
 				
 				case TOK_LTE:
 				case TOK_GTE:
@@ -3033,6 +3089,20 @@ static void resolve_type_tags(script_t* script, void* vexp)
 				error_defer_e(exp->whilex.cond, "Condition does not evaluate to a boolean value\n");
 			
 			resolve_type_tags(script, exp->whilex.body);
+		} break;
+
+		case EXP_FOR:
+		{
+			exp->tag = create_type_tag(script, TAG_VOID);
+
+			resolve_type_tags(script, exp->forx.init);
+			resolve_type_tags(script, exp->forx.cond);
+			resolve_type_tags(script, exp->forx.step);
+
+			if (!is_type_tag(exp->forx.cond->tag, TAG_BOOL))
+				error_defer_e(exp->forx.cond, "Condition does not evaluate to a boolean value\n");
+
+			resolve_type_tags(script, exp->forx.body);
 		} break;
 		
 		case EXP_RETURN:
@@ -3308,6 +3378,8 @@ static void compile_value_expr(script_t* script, expr_t* exp)
 				case TOK_MINUS: append_code(script, OP_SUB); break;
 				case TOK_MUL: append_code(script, OP_MUL); break;
 				case TOK_DIV: append_code(script, OP_DIV); break;
+				case TOK_MOD: append_code(script, OP_MOD); break;
+
 				case TOK_LT: append_code(script, OP_LT); break;
 				case TOK_GT: append_code(script, OP_GT); break;
 				case TOK_LTE: append_code(script, OP_LTE); break;
@@ -3446,6 +3518,25 @@ static void compile_expr(script_t* script, expr_t* exp)
 			append_code(script, OP_GOTO);
 			append_int(script, jump);
 			
+			patch_int(script, loc, script->code.length);
+		} break;
+
+		case EXP_FOR:
+		{
+			compile_expr(script, exp->forx.init);
+			int jump = script->code.length;
+			compile_value_expr(script, exp->forx.cond);
+
+			append_code(script, OP_GOTOZ);
+			int loc = script->code.length;
+			append_int(script, 0);
+
+			compile_expr(script, exp->forx.body);
+			compile_expr(script, exp->forx.step);
+
+			append_code(script, OP_GOTO);
+			append_int(script, jump);
+
 			patch_int(script, loc, script->code.length);
 		} break;
 		
@@ -4821,6 +4912,8 @@ static void disassemble(script_t* script, FILE* out)
 			case OP_SUB: fprintf(out, "sub\n"); break;
 			case OP_MUL: fprintf(out, "mul\n"); break;
 			case OP_DIV: fprintf(out, "div\n"); break;
+			case OP_MOD: fprintf(out, "mod\n"); break;
+
 			case OP_LT: fprintf(out, "lt\n"); break;
 			case OP_GT: fprintf(out, "gt\n"); break;
 			case OP_LTE: fprintf(out, "lte\n"); break;
@@ -5143,6 +5236,8 @@ static void execute_cycle(script_t* script)
 		BOP(OP_SUB, -)
 		BOP(OP_MUL, *)
 		BOP(OP_DIV, /)
+		BOP_TYPE(OP_MOD, %, int)
+
 		BOP_REL(OP_LT, <)
 		BOP_REL(OP_GT, >)
 		BOP_REL(OP_LTE, <=)

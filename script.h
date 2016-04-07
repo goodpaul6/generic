@@ -40,6 +40,7 @@ typedef enum script_op
 	OP_SUB,
 	OP_MUL,
 	OP_DIV,
+	OP_MOD,
 	OP_LT,
 	OP_GT,
 	OP_LTE,
