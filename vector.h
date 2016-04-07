@@ -1,6 +1,10 @@
 #ifndef VECTOR_H
 #define VECTOR_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <stddef.h>
 
 typedef struct 
@@ -38,5 +42,9 @@ void vec_traverse(vector_t* vector, vector_traverse_t traverse);
 
 void vec_clear(vector_t* vector);
 void vec_destroy(vector_t* vector);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

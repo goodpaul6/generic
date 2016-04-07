@@ -1,3 +1,7 @@
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include "hashmap.h"
 
 #include <stdio.h>
@@ -191,3 +195,7 @@ void map_destroy(hashmap_t* map)
 	map_clear(map);
 	vec_destroy(&map->active_buckets);
 }
+
+#ifdef __cplusplus
+}
+#endif

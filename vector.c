@@ -1,3 +1,7 @@
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include "vector.h"
 
 #include <stdio.h>
@@ -192,3 +196,7 @@ void vec_destroy(vector_t* vector)
 	vector->length = 0;
 	vector->capacity = 0;
 }
+
+#ifdef __cplusplus
+}
+#endif

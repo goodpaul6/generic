@@ -1,6 +1,10 @@
 #ifndef SCRIPT_H
 #define SCRIPT_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <stdio.h>
 
 #include "vector.h"
@@ -173,6 +177,11 @@ typedef struct script_debug_breakpoint
 
 typedef struct
 {
+	// NOTE: This is a pointer you can use to store your own structures
+	// for access in external function calls 
+	// set it like: script->userdata = my_userdata;
+	void* userdata;
+
 	char in_extern;
 	int pc, fp;
 	
@@ -191,6 +200,10 @@ typedef struct
 
 	vector_t globals;
 	
+	// NOTE:
+	// Number of stack frames (indir_depth)
+	int indir_depth;
+
 	vector_t stack;
 	vector_t indir;
 	
@@ -234,6 +247,38 @@ void script_debug(script_t* script, script_debug_env_t* env);
 
 char script_get_function_by_name(script_t* script, const char* name, script_function_t* function);
 void script_call_function(script_t* script, script_function_t function, int nargs);
+void script_goto_function(script_t* script, script_function_t function, int nargs);
+
+#define script_call_function_cycles(script, function, cycles, nargs, ...) \
+do \
+{ \
+	static bool inFunction = false; \
+	static int startDepth = 0; \
+	static script_value_t* retVal = NULL; \
+	(script)->ret_val = retVal; \
+	if(!inFunction) \
+	{ \
+		startDepth = (script)->indir_depth; \
+		__VA_ARGS__ \
+		script_goto_function((script), (function), (nargs)); \
+		inFunction = true; \
+	} \
+	for(int i = 0; i < (int)(cycles); ++i) \
+	{ \
+		script_execute_cycle((script)); \
+		if ((script)->indir_depth <= startDepth || (script)->pc < 0) \
+		{ \
+			inFunction = false; \
+			break; \
+		} \
+	} \
+	retVal = (script)->ret_val; \
+} while(0)
+
+// NOTE: (YOU HAVE TO BE INSIDE A SCRIPT FUNCTION FOR THIS TO WORK) 
+// Sets argument (index, 0 is first argument) of current function to the value
+// on the top of the stack given the number of args (nargs)
+void script_set_arg(script_t* script, int index, int nargs);
 
 void script_push_bool(script_t* script, char bv);
 char script_pop_bool(script_t* script);
@@ -262,5 +307,9 @@ void script_push_null(script_t* script);
 void script_return_top(script_t* script);
 
 void script_destroy(script_t* script);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

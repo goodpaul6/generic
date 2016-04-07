@@ -1,3 +1,7 @@
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include "script.h"
 #include "hashmap.h"
 
@@ -1022,7 +1026,7 @@ static var_decl_t* declare_argument(const char* name, type_tag_t* tag)
 	decl->tag = tag;
 	decl->name = estrdup(name);
 	decl->scope = g_scope;
-	decl->index = -(g_cur_func->args.length + 1);
+	decl->index = -((int)g_cur_func->args.length + 1);
 	
 	vec_push_back(&g_cur_func->args, &decl);
 	return decl;
@@ -1909,7 +1913,21 @@ static int add_module(script_t* script, const char* local_path, const char* code
 
 static void apply_import_directive(script_t* script, const char* filename)
 {
-	FILE* file = fopen(filename, "rb");
+	script_module_t* module = (script_module_t*)vec_get(&script->modules, g_cur_module_index);
+	char* dir = estrdup(module->local_path);
+	char* sep = strrchr(dir, '/');
+	if (sep)
+		*(sep + 1) = 0;
+	else
+		*dir = 0;
+
+	size_t dirlen = strlen(dir);
+	size_t namelen = strlen(filename);
+	char* path = emalloc(dirlen + namelen + 1);
+	strcpy(path, dir);
+	strcpy(path + dirlen, filename);
+
+	FILE* file = fopen(path, "rb");
 	if(file)
 	{
 		fseek(file, 0, SEEK_END);
@@ -1920,13 +1938,16 @@ static void apply_import_directive(script_t* script, const char* filename)
 		fread(code, 1, length, file);
 		code[length] = '\0';
 		
-		add_module(script, filename, code);
+		add_module(script, path, code);
 		
 		free(code);
 		fclose(file);
 	}
 	else
 		fprintf(stderr, "Unable to open file '%s' for importing\n", filename);
+
+	free(path);
+	free(dir);
 }
 
 static expr_t* parse_factor(script_t* script);
@@ -3475,8 +3496,11 @@ static void compile_expr(script_t* script, expr_t* exp)
 
 static void allocate_globals(script_t* script)
 {
-	script_value_t* val = NULL;
-	
+	static script_value_t null_val;
+	null_val.type = VAL_NULL;
+
+	script_value_t* pv = &null_val;
+
 	int num_globals = 0;
 	for (int i = 0; i < script->modules.length; ++i)
 	{
@@ -3484,7 +3508,7 @@ static void allocate_globals(script_t* script)
 		num_globals += module->globals.length;
 	}
 
-	vec_resize(&script->globals, num_globals, &val);
+	vec_resize(&script->globals, num_globals, &pv);
 }
 
 void script_bind_extern(script_t* script, const char* name, script_extern_t ext)
@@ -4148,6 +4172,7 @@ void script_init(script_t* script)
 	g_line = 1;
 	g_file = "none";
 
+	script->userdata = NULL;
 	script->in_extern = 0;
 	
 	script->cur_file = "unknown";
@@ -4162,6 +4187,8 @@ void script_init(script_t* script)
 	script->pc = -1;
 	script->fp = 0;
 	
+	script->indir_depth = 0;
+
 	vec_init(&script->globals, sizeof(script_value_t*));
 	
 	vec_init(&script->stack, sizeof(script_value_t*));
@@ -4307,6 +4334,8 @@ void script_reset(script_t* script)
 	script->gc_head = NULL;
 	script->ret_val = NULL;
 
+	script->indir_depth = 0;
+
 	vec_clear(&script->globals);
 	
 	vec_clear(&script->stack);
@@ -4314,6 +4343,7 @@ void script_reset(script_t* script)
 	
 	vec_clear(&script->code);
 	
+	vec_clear(&script->function_names);
 	vec_clear(&script->function_pcs);
 }
 
@@ -4442,6 +4472,13 @@ static script_value_t* pop_value(script_t* script)
 	vec_pop_back(&script->stack, &val);
 	
 	return val;
+}
+
+void script_set_arg(script_t* script, int index, int nargs)
+{
+	if (script->fp == 0 || script->pc < 0) return;
+	script_value_t* val = pop_value(script);
+	vec_set(&script->stack, script->fp + (index - nargs), &val);
 }
 
 void script_push_bool(script_t* script, char bv)
@@ -4612,31 +4649,38 @@ static script_struct_t* pop_struct(script_t* script)
 static void push_stack_frame(script_t* script, word nargs)
 {
 	int i_nargs = (int)nargs;
+
 	vec_push_back(&script->indir, &i_nargs);
 	vec_push_back(&script->indir, &script->fp);
 	vec_push_back(&script->indir, &script->pc);
 	
 	script->fp = script->stack.length;
+	++script->indir_depth;
 }
 
 static void pop_stack_frame(script_t* script)
 {
-	if(script->indir.length <= 0)
+	if (script->indir_depth <= 0)
 	{
 		script->pc = -1;
+		vec_clear(&script->stack);
 		return;
 	}
 	
-	// resize the stack without resetting the values
+	// NOTE: Remove local values
 	vec_resize(&script->stack, script->fp, NULL);
-	
+
+	// NOTE: Reset pc and fp
 	vec_pop_back(&script->indir, &script->pc);
 	vec_pop_back(&script->indir, &script->fp);
 	
 	int nargs;
 	vec_pop_back(&script->indir, &nargs);
-	
+
+	// NOTE: Remove arguments
 	vec_resize(&script->stack, script->stack.length - nargs, NULL);
+
+	--script->indir_depth;
 }
 
 static int read_int_at(script_t* script, int pc)
@@ -5327,20 +5371,6 @@ void script_parse_code(script_t* script, const char* code, const char* module_na
 				fprintf(stderr, "Skipping module: %s\n", module->local_path);
 				continue;
 			}
-			
-			/*vector_t codebuf;
-			vec_init(&codebuf, sizeof(char));
-			
-			fseek(file, 0, SEEK_END);
-			size_t length = ftell(file);
-			fseek(file, 0, SEEK_SET);
-			
-			vec_resize(&codebuf, length + 1, NULL);
-			
-			fread(codebuf.data, 1, length, file);			
-			fclose(file);
-			
-			codebuf.data[length] = '\0';*/
 		
 			g_file = module->local_path;
 			g_line = 1;
@@ -5494,6 +5524,14 @@ void script_start(script_t* script)
 	g_cur_module_index = -1;
 
 	script->pc = 0;
+
+	// NOTE: All global code needs to be run at startup
+	// because otherwise globals remain uninitialized
+	// etc
+	while (script->pc >= 0)
+		execute_cycle(script);
+	
+	script->pc = 0;
 }
 
 void script_execute_cycle(script_t* script)
@@ -5504,6 +5542,7 @@ void script_execute_cycle(script_t* script)
 void script_stop(script_t* script)
 {
 	script->pc = -1;
+	vec_clear(&script->stack);
 }
 
 static void read_console_input(char* buf, size_t length)
@@ -5728,12 +5767,18 @@ char script_get_function_by_name(script_t* script, const char* name, script_func
 
 void script_call_function(script_t* script, script_function_t function, int nargs)
 {
-	int fp = script->fp;
+	int depth = script->indir_depth;
 	push_stack_frame(script, (word)nargs);
 	script->pc = vec_get_value(&script->function_pcs, function.index, int);
 	
-	while(script->fp > fp)
+	while(script->indir_depth > depth && script->pc >= 0)
 		execute_cycle(script);
+}
+
+void script_goto_function(script_t * script, script_function_t function, int nargs)
+{
+	push_stack_frame(script, (word)nargs);
+	script->pc = vec_get_value(&script->function_pcs, function.index, int);
 }
 
 static void destroy_string(void* p_str)
@@ -5778,3 +5823,7 @@ void script_destroy(script_t* script)
 	
 	vec_destroy(&script->function_pcs);
 }
+
+#ifdef __cplusplus
+}
+#endif

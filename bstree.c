@@ -1,3 +1,7 @@
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include "bstree.h"
 
 #include <stdio.h>
@@ -209,3 +213,7 @@ void* bs_tree_remove(bs_tree_t* tree, void* key)
 	
 	return value;
 }
+
+#ifdef __cplusplus
+}
+#endif

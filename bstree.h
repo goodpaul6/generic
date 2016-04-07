@@ -1,6 +1,10 @@
 #ifndef BSTREE_H
 #define BSTREE_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <stddef.h>
 
 typedef struct bs_tree_node
@@ -32,5 +36,9 @@ void* bs_tree_remove(bs_tree_t* tree, void* key);
 int bs_tree_traverse(bs_tree_t* tree, bs_tree_traverse_t traverse);
 
 void bs_tree_destroy(bs_tree_t* tree);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

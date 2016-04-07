@@ -1,6 +1,10 @@
 #ifndef HASHMAP_H
 #define HASHMAP_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define HASHMAP_BUCKET_AMT 1024
 
 #include <stddef.h>
@@ -33,5 +37,9 @@ void map_traverse(hashmap_t* map, hashmap_traverse_t traverse, void* data);
 
 void map_clear(hashmap_t* map);
 void map_destroy(hashmap_t* map);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif
