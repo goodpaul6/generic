@@ -15,7 +15,7 @@ extern "C" {
 
 #define MAX_LEX_CHARS 256
 #define STACK_SIZE 256
-#define INIT_GC_THRESH 8
+#define INIT_GC_THRESH 64
 
 typedef unsigned char word;
 
@@ -115,6 +115,8 @@ typedef struct
 
 enum
 {
+	TOK_ATOMIC,
+
 	TOK_DIRECTIVE,
 	
 	TOK_USING,
@@ -221,7 +223,9 @@ typedef enum expr_type
 	EXP_RETURN,
 	
 	EXP_EXTERN,
-	EXP_FUNC
+	EXP_FUNC,
+
+	EXP_ATOMIC
 } expr_type_t;
 
 typedef struct expr
@@ -332,10 +336,14 @@ typedef struct expr
 			func_decl_t* decl;
 			struct expr* body;
 		} funcx;
+
+		struct expr* atomx;
 	};
 } expr_t;
 
 static const char* g_token_names[NUM_TOKENS] = {
+	"atomic",
+
 	"#",
 	
 	"using",
@@ -654,6 +662,11 @@ static void delete_expr(expr_t* exp)
 	{
 		switch(exp->type)
 		{
+			case EXP_ATOMIC:
+			{
+				delete_expr(exp->atomx);
+			} break;
+
 			case EXP_VAR:
 			{
 				free(exp->varx.name);
@@ -825,7 +838,7 @@ static type_tag_t* get_user_type_tag_from_name(script_t* script, const char* nam
 		script_module_t* module = vec_get(&script->modules, i);
 		var_decl_t* decl = map_get(&module->user_type_tags, name);
 		if (decl)
-			return decl;
+			return decl->tag;
 	}
 
 	return NULL;
@@ -1243,6 +1256,7 @@ static int get_token(char reset)
 		
 		if(g_lexeme[0] == '#') return TOK_DIRECTIVE;
 		
+		if (strcmp(g_lexeme, "atomic") == 0) return TOK_ATOMIC;
 		if(strcmp(g_lexeme, "using") == 0) return TOK_USING;
 		if(strcmp(g_lexeme, "static") == 0) return TOK_STATIC;
 		if(strcmp(g_lexeme, "null") == 0) return TOK_NULL;
@@ -2028,10 +2042,20 @@ static expr_t* parse_directive(script_t* script)
 	return NULL;
 }
 
+static expr_t* parse_atomic(script_t* script)
+{
+	expr_t* exp = create_expr(EXP_ATOMIC);
+	get_next_token();
+
+	exp->atomx = parse_expr(script);
+	return exp;
+}
+
 static expr_t* parse_factor(script_t* script)
 {
 	switch(g_cur_tok)
 	{
+		case TOK_ATOMIC: return parse_atomic(script);
 		case TOK_DIRECTIVE: return parse_directive(script);
 		case TOK_NULL: return parse_null(script);
 		case TOK_TRUE:
@@ -2201,8 +2225,7 @@ static expr_t* parse_unary(script_t* script)
 					return exp;
 				}
 				
-				// NOTE: A velociraptor attacked me out of nowhere when I compiled this
-				// http://xkcd.com/292/
+				// NOTE: http://xkcd.com/292/
 				goto not_type;
 			}
 		
@@ -2433,6 +2456,11 @@ static void resolve_symbols(script_t* script, expr_t* exp)
 {
 	switch(exp->type)
 	{
+		case EXP_ATOMIC:
+		{
+			resolve_symbols(script, exp->atomx);
+		} break;
+		
 		case EXP_DOT: case EXP_COLON:
 		{
 			resolve_symbols(script, exp->dotx.value);
@@ -2789,6 +2817,12 @@ static void resolve_type_tags(script_t* script, void* vexp)
 	
 	switch(exp->type)
 	{
+		case EXP_ATOMIC:
+		{
+			exp->tag = create_type_tag(script, TAG_VOID);
+			resolve_type_tags(script, exp->atomx);
+		} break;
+
 		case EXP_DOT: case EXP_COLON:
 		{
 			resolve_type_tags(script, exp->dotx.value);
@@ -2933,7 +2967,7 @@ static void resolve_type_tags(script_t* script, void* vexp)
 			// number
 			if(exp->binx.op != TOK_ASSIGN)
 			{ 
-				if(!compare_type_tags(exp->binx.lhs->tag, exp->binx.rhs->tag) || exp->binx.lhs->tag->type != TAG_NUMBER)
+				if(!compare_type_tags(exp->binx.lhs->tag, exp->binx.rhs->tag) || !is_type_tag(exp->binx.lhs->tag, TAG_NUMBER))
 				{	
 					if(exp->binx.op != TOK_EQUALS && exp->binx.op != TOK_NOTEQUAL && 
 						exp->binx.op != TOK_LAND && exp->binx.op != TOK_LOR)
@@ -3199,14 +3233,11 @@ static void compile_value_expr(script_t* script, expr_t* exp)
 			for(int i = exp->newx.init.length - 1; i >= 0; --i)
 			{
 				expr_t* init = vec_get_value(&exp->newx.init, i, expr_t*);
-				char is_function = 0;
-				int index = get_struct_type_member_index(exp->newx.type, init->binx.lhs->varx.name, &is_function);
+				int index = get_struct_type_member_index(exp->newx.type, init->binx.lhs->varx.name);
 				
 				if(index < 0) error_exit_e(init, "Attempted to initialize non-existent member '%s' in struct %s instantiation\n", 
 							  init->binx.lhs->varx.name, exp->newx.type->ds.name);
-				if(is_function) error_exit_e(init, "Attempted to initialize member function '%s' in struct %s instantiation\n",
-							  init->binx.lhs->varx.name, exp->newx.type->ds.name);
-				
+							  
 				initialized_members[index] = 1;
 				++num_init;
 				
@@ -3248,18 +3279,12 @@ static void compile_value_expr(script_t* script, expr_t* exp)
 		
 		case EXP_DOT:
 		{
-			char is_function = 0;
-			int index = get_struct_type_member_index(exp->dotx.value->tag, exp->dotx.name, &is_function);
+			int index = get_struct_type_member_index(exp->dotx.value->tag, exp->dotx.name);
 			if(index < 0) error_exit_e(exp, "Attempted to access non-existent member '%s' in struct %s\n", exp->dotx.name, exp->dotx.value->tag->ds.name);
 			
-			if(!is_function)
-			{
-				compile_value_expr(script, exp->dotx.value);
-				append_code(script, OP_STRUCT_GET);
-				append_int(script, index);
-			}
-			else
-				error_exit_e(exp, "Attempted to access member function with '.' operator; use ':' operator instead\n");
+			compile_value_expr(script, exp->dotx.value);
+			append_code(script, OP_STRUCT_GET);
+			append_int(script, index);		
 		} break;
 
 		case EXP_COLON:
@@ -3457,6 +3482,13 @@ static void compile_expr(script_t* script, expr_t* exp)
 	
 	switch(exp->type)
 	{
+		case EXP_ATOMIC:
+		{
+			append_code(script, OP_ATOMIC_ENABLE);
+			compile_expr(script, exp->atomx);
+			append_code(script, OP_ATOMIC_DISABLE);
+		} break;
+
 		case EXP_STRUCT_DECL:
 		case EXP_EXTERN:
 		case EXP_VAR:
@@ -4123,14 +4155,14 @@ static void ext_print_char(script_t* script, vector_t* args)
 static void ext_floor(script_t* script, vector_t* args)
 {
 	script_value_t* val = script_get_arg(args, 0);
-	script_push_number(script, floor(val->number));
+	script_push_number(script, (long)(val->number));
 	script_return_top(script);
 }
 
 static void ext_ceil(script_t* script, vector_t* args)
 {
 	script_value_t* val = script_get_arg(args, 0);
-	script_push_number(script, ceil(val->number));
+	script_push_number(script, (long)(val->number) + 1);
 	script_return_top(script);
 }
 
@@ -4258,6 +4290,23 @@ static void bind_default_externs(script_t* script)
 	script_bind_extern(script, "u8_buffer_to_string", ext_u8_buffer_to_string);
 }
 
+static void add_heap_block(script_t* script)
+{
+	script_heap_block_t* block = emalloc(sizeof(script_heap_block_t));
+	
+	block->next = script->heap_head;
+	block->num_free = SCRIPT_HEAP_BLOCK_SIZE;
+	for (int i = 0; i < block->num_free; ++i)
+	{
+		block->free_indices[i] = block->num_free - i - 1;
+
+		block->values[i].block = block;
+		block->values[i].block_index = i;
+	}
+
+	script->heap_head = block;
+}
+
 void script_init(script_t* script)
 {
 	g_line = 1;
@@ -4269,7 +4318,9 @@ void script_init(script_t* script)
 	script->cur_file = "unknown";
 	script->cur_line = 0;
 	
-	script->free_list = NULL;
+	script->heap_head = NULL;
+	add_heap_block(script);
+
 	script->gc_head = NULL;
 	script->ret_val = NULL;
 	
@@ -4284,7 +4335,7 @@ void script_init(script_t* script)
 	
 	vec_init(&script->stack, sizeof(script_value_t*));
 	vec_reserve(&script->stack, STACK_SIZE);
-	
+
 	vec_init(&script->indir, sizeof(int));
 	
 	vec_init(&script->code, sizeof(word));
@@ -4346,7 +4397,7 @@ void script_init(script_t* script)
 	}
 #endif
 
-static void delete_value(script_t* script, script_value_t* val, char insert_into_free_list)
+static void delete_value(script_t* script, script_value_t* val)
 {	
 	switch(val->type)
 	{
@@ -4362,31 +4413,20 @@ static void delete_value(script_t* script, script_value_t* val, char insert_into
 		case VAL_NATIVE: if(val->nat.on_delete) val->nat.on_delete(val->nat.value); break;
 	}
 	
-	if(insert_into_free_list)
-	{
-		val->next = script->free_list;
-		script->free_list = val;
-	}
-	else
-		free(val);
+	val->block->free_indices[val->block->num_free++] = val->block_index;
 }
 
 static void destroy_all_values(script_t* script)
 {
-	// TODO: There is a double free somewhere here
-	while (script->free_list)
+	script_heap_block_t* block = script->heap_head;
+	while (block)
 	{
-		script_value_t* next = script->free_list->next;
-		delete_value(script, script->free_list, 0);
-		script->free_list = next;
+		script_heap_block_t* next = block->next;
+		free(block);
+		block = next;
 	}
 
-	while(script->gc_head)
-	{
-		script_value_t* next = script->gc_head->next;
-		delete_value(script, script->gc_head, 0);
-		script->gc_head = next;
-	}
+	script->gc_head = NULL;
 }
 
 static void destroy_modules(void* p_module)
@@ -4411,8 +4451,10 @@ void script_reset(script_t* script)
 	vec_clear(&script->modules);
 	
 	destroy_all_values(script);
-	// TODO: Symbols and stuff should probably be reset too
 	
+	script->heap_head = NULL;
+	add_heap_block(script);
+
 	script->in_extern = 0;
 	
 	script->num_objects = 0;
@@ -4421,7 +4463,6 @@ void script_reset(script_t* script)
 	script->pc = -1;
 	script->fp = 0;
 
-	script->free_list = NULL;
 	script->gc_head = NULL;
 	script->ret_val = NULL;
 
@@ -4507,7 +4548,7 @@ static void sweep(script_t* script)
 			script_value_t* unreached = *val;
 			*val = unreached->next;
 			--script->num_objects;
-			delete_value(script, unreached, 1);
+			delete_value(script, unreached);
 		}
 		else
 		{
@@ -4524,19 +4565,29 @@ static void collect_garbage(script_t* script)
 	script->max_objects_until_gc = script->num_objects * 2;
 }
 
+static script_value_t* get_heap_value(script_t* script)
+{
+	script_heap_block_t* block = script->heap_head;
+	while(block)
+	{
+		if (block->num_free > 0)
+		{
+			int index = block->free_indices[--block->num_free];
+			return &block->values[index];
+		}
+
+		block = block->next;
+	}
+
+	add_heap_block(script);
+	return get_heap_value(script);
+}
+
 static script_value_t* new_value(script_t* script, script_value_type_t type)
 {
-	script_value_t* val;
-	if(script->free_list)
-	{
-		val = script->free_list;
-		script->free_list = script->free_list->next;
-	}
-	else
-	{			
-		if(!script->in_extern && script->num_objects >= script->max_objects_until_gc) collect_garbage(script); 
-		val = emalloc(sizeof(script_value_t));
-	}
+	if(!script->in_extern && script->num_objects >= script->max_objects_until_gc) collect_garbage(script); 
+	
+	script_value_t* val = get_heap_value(script);
 	
 	val->marked = 0;
 	val->type = type;
@@ -4574,9 +4625,18 @@ void script_set_arg(script_t* script, int index, int nargs)
 
 void script_push_bool(script_t* script, char bv)
 {
-	script_value_t* val = new_value(script, VAL_BOOL);
-	val->boolean = bv;
-	push_value(script, val);
+	// NOTE: Singleton values
+	// which never get gc'd
+	static script_value_t true_val = { 0 };
+	static script_value_t false_val = { 0 };
+
+	true_val.type = VAL_BOOL;
+	true_val.boolean = 1;
+	
+	false_val.type = VAL_BOOL;
+	false_val.boolean = 0;
+
+	push_value(script, bv ? &true_val : &false_val);
 }
 
 char script_pop_bool(script_t* script)
@@ -4794,11 +4854,12 @@ static void disassemble(script_t* script, FILE* out)
 	
 	while(pc < script->code.length)
 	{
-		fprintf(out, "%d (%s:%i): ", pc, file, line);
-		
 		word code = vec_get_value(&script->code, pc, word);
 		++pc;
 		
+		if(code != OP_FILE && code != OP_LINE)
+			fprintf(out, "%d (%s:%i): ", pc, file, line);
+
 		switch(code)
 		{
 			case OP_PUSH_NULL: fprintf(out, "push_null\n"); break;
@@ -4992,7 +5053,6 @@ static void disassemble(script_t* script, FILE* out)
 			{
 				int index = read_int_at(script, pc);
 				const char* str = vec_get_value(&script->strings, index, script_string_t).data;
-				fprintf(out, "file '%s'\n", str);
 				pc += sizeof(int) / sizeof(word);
 				
 				file = str;
@@ -5001,11 +5061,20 @@ static void disassemble(script_t* script, FILE* out)
 			case OP_LINE:
 			{
 				int line_no = read_int_at(script, pc);
-				fprintf(out, "line %d\n", line_no);
 				pc += sizeof(int) / sizeof(word);
 				line = line_no;
 			} break;
 			
+			case OP_ATOMIC_ENABLE:
+			{
+				fprintf(out, "atomic_enable\n");
+			} break;
+			
+			case OP_ATOMIC_DISABLE:
+			{
+				fprintf(out, "atomic_disable\n");
+			} break;
+
 			case OP_HALT:
 			{
 				fprintf(out, "halt\n");
@@ -5350,9 +5419,16 @@ static void execute_cycle(script_t* script)
 			{
 				int new_stack_length = script->stack.length - nargs;
 				
-				vector_t args;
-				vec_init(&args, sizeof(script_value_t*));
-				
+				// FIXME: THIS LEAKS FAMMM
+				static char init_args = 0;
+				static vector_t args;
+
+				if (!init_args)
+				{
+					init_args = 1;
+					vec_init(&args, sizeof(script_value_t*));
+				}
+
 				// NOTE: copies argument pointers over to the args vector
 				vec_copy_region(&args, &script->stack, 0, script->stack.length - nargs, nargs);
 				
@@ -5360,7 +5436,7 @@ static void execute_cycle(script_t* script)
 				vec_get_value(&script->externs, function.index, script_extern_t)(script, &args);
 				script->in_extern = 0;
 				
-				vec_destroy(&args);
+				vec_clear(&args);
 				
 				script->stack.length = new_stack_length;
 			}
@@ -5395,12 +5471,24 @@ static void execute_cycle(script_t* script)
 			script->cur_line = line;
 		} break;
 
+		case OP_ATOMIC_ENABLE:
+		{
+			++script->atomic_depth;
+		} break;
+
+		case OP_ATOMIC_DISABLE:
+		{
+			--script->atomic_depth;
+			if (script->atomic_depth < 0)
+				script->atomic_depth = 0;
+		} break;
+
 		case OP_HALT:
 		{
 			script->pc = -1;
 		} break;
 	}
-	
+
 	if(script->pc >= script->code.length)
 		script->pc = -1;
 }
@@ -5448,6 +5536,7 @@ void script_parse_code(script_t* script, const char* code, const char* module_na
 	if (!module->parsed)
 	{
 		g_cur_module_index = current_module_index;
+			
 		parse_program(script, &module->expr_list);
 		module->parsed = 1;
 	}

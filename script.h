@@ -10,6 +10,8 @@ extern "C" {
 #include "vector.h"
 #include "hashmap.h"
 
+#define SCRIPT_HEAP_BLOCK_SIZE (4096U / sizeof(script_value_t))
+
 typedef enum script_op
 {
 	OP_PUSH_NULL,
@@ -73,6 +75,9 @@ typedef enum script_op
 	
 	OP_FILE,
 	OP_LINE,
+
+	OP_ATOMIC_ENABLE,
+	OP_ATOMIC_DISABLE,
 	
 	OP_HALT
 } script_op_t;
@@ -127,8 +132,12 @@ typedef struct script_native
 	script_native_callback_t on_delete;
 } script_native_t;
 
+struct script_heap_block;
 typedef struct script_value
 {
+	struct script_heap_block* block;
+	int block_index;
+
 	script_value_type_t type;
 	struct script_value* next;
 	char marked;
@@ -176,6 +185,17 @@ typedef struct script_debug_breakpoint
 	int line;			// NOTE: If this is -1, then no break occurs
 } script_debug_breakpoint_t;
 
+typedef struct script_heap_block
+{
+	struct script_heap_block* next;
+
+	int num_free;
+	int free_indices[SCRIPT_HEAP_BLOCK_SIZE];
+
+	script_value_t values[SCRIPT_HEAP_BLOCK_SIZE];
+} script_heap_block_t;
+
+// TODO: ATOMIC STACK
 typedef struct
 {
 	// NOTE: This is a pointer you can use to store your own structures
@@ -183,6 +203,9 @@ typedef struct
 	// set it like: script->userdata = my_userdata;
 	void* userdata;
 
+	// NOTE: when this is > 0, the script is cycled until
+	// this is 0
+	char atomic_depth;
 	char in_extern;
 	int pc, fp;
 	
@@ -192,7 +215,8 @@ typedef struct
 	int cur_line;
 	const char* cur_file;
 	
-	script_value_t* free_list;
+	script_heap_block_t* heap_head;
+	
 	script_value_t* gc_head;
 	script_value_t* ret_val;
 	
@@ -202,7 +226,7 @@ typedef struct
 	vector_t globals;
 	
 	// NOTE:
-	// Number of stack frames (indir_depth)
+	// Number of stack frames
 	int indir_depth;
 
 	vector_t stack;
@@ -250,6 +274,9 @@ char script_get_function_by_name(script_t* script, const char* name, script_func
 void script_call_function(script_t* script, script_function_t function, int nargs);
 void script_goto_function(script_t* script, script_function_t function, int nargs);
 
+// NOTE: Calls the specified functions for (cycles) number of execution cycles.
+// A sort of preemptive threading system.
+// PS: An atomic block counts as one cycle.
 #define script_call_function_cycles(script, function, cycles, nargs, ...) \
 do \
 { \
@@ -266,7 +293,8 @@ do \
 	} \
 	for(int i = 0; i < (int)(cycles); ++i) \
 	{ \
-		script_execute_cycle((script)); \
+		while((script)->atomic_depth > 0 && (script)->pc >= 0) \
+			script_execute_cycle((script)); \
 		if ((script)->indir_depth <= startDepth || (script)->pc < 0) \
 		{ \
 			inFunction = false; \

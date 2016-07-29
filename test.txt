@@ -1,8 +1,20 @@
 #import "basic.txt"
 
-func printf(fmt : string, args : array-dynamic) : void
+extern add_module(string, string) : number
+extern compile_module(number) : void
+extern run_module(number) : void
+
+var madd : number = add_module("add", "write module_args[0] + module_args[1]")
+
+compile_module(madd)
+
+func add(x : number, y : number) : void
 {
-	write format_string(fmt, args)
+	module_args = [x, y]
+	run_module(madd)
 }
 
-printf("Welcome to generic!", [] : dynamic)
+for var i : number = 0, i < 10, i = i + 1
+	add(10, 20)
+
+

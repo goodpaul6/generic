@@ -5,6 +5,8 @@ extern floor(number) : number
 extern char_to_number(char) : number
 extern number_to_string(number) : string
 
+var module_args : array-dynamic
+
 func format_string(fmt : string, args : array-dynamic) : string
 {
 	var buf : native = create_u8_buffer()

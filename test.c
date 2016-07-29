@@ -3,7 +3,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <assert.h>
-#include <windows.h>
 
 int main(int argc, char* argv[])
 {
@@ -28,24 +27,8 @@ int main(int argc, char* argv[])
 		if(strcmp(argv[i], "-dis") == 0)
 			script_dissassemble(&script, stdout);
 	}
-		
-	LARGE_INTEGER start, end, msec;
-	LARGE_INTEGER freq;
-	
-	QueryPerformanceFrequency(&freq);
-	
-	QueryPerformanceCounter(&start);
 	for(int i = 0; i < strtol(argv[1], NULL, 10); ++i)
 		script_run(&script);
-	QueryPerformanceCounter(&end);
-	
-	msec.QuadPart = end.QuadPart - start.QuadPart;
-	
-	msec.QuadPart *= 1000000;
-	msec.QuadPart /= freq.QuadPart;
-	
-	printf("It took %llu us to run\n", msec.QuadPart);
-	
 	script_destroy(&script);
 
 	return 0;
