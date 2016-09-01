@@ -688,15 +688,21 @@ static void debug_script(script_t* script)
 			script_module_t* mod = get_executing_module(script);
 			if (mod)
 			{
+				printf("distance: ");
+				
+				fgets(cmdbuf, 256, stdin);
+				cmdbuf[strcspn(cmdbuf, "\n")] = '\0';
+
 				char* code = mod->source_code;
 				int line = 1;
+				int minDist = atoi(cmdbuf);
 
 				while (code && *code)
 				{
 					char* line_end = strchr(code, '\n');
 
 					int dist = (int)labs(script->cur_line - line);
-					if (dist < 10)
+					if (dist < minDist)
 					{
 						if (dist == 0)
 							printf("error ->");
@@ -769,6 +775,52 @@ static void debug_script(script_t* script)
 			
 			write_value(val, 1);
 			printf("\n");
+		}
+		else if (strcmp(cmdbuf, "stack\n") == 0)
+		{
+			script_call_record_t* record;
+			if (script->call_records.length <= 0)
+				record = NULL;
+			else
+				record = vec_get(&script->call_records, script->call_records.length - 1);
+
+			func_decl_t* decl = NULL;
+
+			if (record)
+				decl = reference_function(script, vec_get_value(&script->function_names, record->function.index, char*));
+
+			int min = script->fp;
+			if (record)
+				min = script->fp - record->nargs;
+
+			for (size_t stackIndex = script->stack.length - 1; stackIndex >= min; --stackIndex)
+			{
+				if (decl)
+				{
+					for (int i = 0; i < decl->locals.length; ++i)
+					{
+						var_decl_t* local = vec_get_value(&decl->locals, i, var_decl_t*);
+						if (local->index == stackIndex - script->fp)
+						{
+							printf("%s = ", local->name);
+							break;
+						}
+					}
+
+					for (int i = 0; i < decl->args.length; ++i)
+					{
+						var_decl_t* arg = vec_get_value(&decl->args, i, var_decl_t*);
+						if (arg->index == stackIndex - script->fp)
+						{
+							printf("%s = ", arg->name);
+							break;
+						}
+					}
+				}
+
+				write_value(vec_get_value(&script->stack, stackIndex, script_value_t*), 1);
+				printf("\n");
+			}
 		}
 		else if (strcmp(cmdbuf, "stop\n") == 0)
 			break;
@@ -3460,7 +3512,6 @@ static void compile_value_expr(script_t* script, expr_t* exp)
 		
 		case EXP_STRUCT_NEW:
 		{
-			// NOTE: VLA keeping track of which members have been initialized
 			char* initialized_members = emalloc(exp->newx.type->ds.members.length);
 			memset(initialized_members, 0, exp->newx.type->ds.members.length);
 			
