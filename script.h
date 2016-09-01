@@ -196,6 +196,31 @@ typedef struct script_heap_block
 	script_value_t values[SCRIPT_HEAP_BLOCK_SIZE];
 } script_heap_block_t;
 
+// NOTE: For stack traces
+typedef struct script_call_record
+{
+	size_t stack_size;
+	int pc, fp;
+	int nargs;
+
+	script_function_t function;
+
+	const char* file;
+	int line;
+} script_call_record_t;
+
+// NOTE: Maps local variable names to frame pointer offsets
+// (Debug info, essentially)
+typedef struct script_function_info
+{
+	char* name;
+	// NOTE: array of char*
+	// first arg is arg_names[0], it's offset is fp - arg_names.length
+	vector_t arg_names;
+	// NOTE: array of char*
+	vector_t local_names;
+} script_function_info_t;
+
 // TODO: ATOMIC STACK
 typedef struct
 {
@@ -215,6 +240,9 @@ typedef struct
 	// cur_file = file name for current instruction pointer
 	int cur_line;
 	const char* cur_file;
+
+	// NOTE: Array of script_call_record_t's
+	vector_t call_records;
 	
 	script_heap_block_t* heap_head;
 	

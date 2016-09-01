@@ -12,6 +12,7 @@ extern "C" {
 #include <string.h>
 #include <stdint.h>
 #include <math.h>
+#include <assert.h>
 
 #define MAX_LEX_CHARS 256
 #define STACK_SIZE 256
@@ -567,7 +568,7 @@ static void error_exit_e(expr_t* exp, const char* fmt, ...)
 	exit(1);
 }
 
-static void write_value(script_value_t* val)
+static void write_value(script_value_t* val, char quote)
 {
 	if(!val)
 	{
@@ -581,7 +582,7 @@ static void write_value(script_value_t* val)
 		case VAL_BOOL: printf("%s", val->boolean ? "true" : "false"); break;
 		case VAL_CHAR: printf("%c", val->code); break;
 		case VAL_NUMBER: printf("%g", val->number); break;
-		case VAL_STRING: printf("%s", val->string.data); break;
+		case VAL_STRING: quote ? printf("\"%s\"", val->string.data) : printf("%s", val->string.data); break;
 		case VAL_FUNC: printf("func (extern: %s, index: %d)", val->function.is_extern ? "true" : "false", val->function.index); break;
 		case VAL_ARRAY:
 		{
@@ -592,7 +593,7 @@ static void write_value(script_value_t* val)
 				if (val == mem)
 					printf("__self__");
 				else
-					write_value(mem);
+					write_value(mem, quote);
 				if(i + 1 < val->array.length) printf(", ");
 			}
 			printf("]");
@@ -606,7 +607,7 @@ static void write_value(script_value_t* val)
 				if (val == mem)
 					printf("__self__");
 				else
-					write_value(mem);
+					write_value(mem, quote);
 				if(i + 1 < val->ds.members.length) printf(", ");
 			}
 			printf(" }");
@@ -620,11 +621,35 @@ static void write_value(script_value_t* val)
 
 static void print_stack_trace(script_t* script)
 {
-	fprintf(stderr, "Stack:\n");
-	for(int i = 0; i < script->stack.length; ++i)
+	fprintf(stderr, "Trace:\n");
+	for(int i = script->call_records.length - 1; i >= 0; --i)
 	{
-		write_value(vec_get_value(&script->stack, i, script_value_t*));
-		printf("\n");
+		script_call_record_t* record = vec_get(&script->call_records, i);
+
+		fprintf(stderr, "(%s, %d): ", record->file, record->line);
+		
+		if (record->function.is_extern)
+			fprintf(stderr, "extern %s(", vec_get_value(&script->extern_names, record->function.index, char*));
+		else
+			fprintf(stderr, "%s(", vec_get_value(&script->function_names, record->function.index, char*));
+		
+		if (record->nargs > 0)
+		{
+			// NOTE: arguments started at exactly record->stackSize - record->nargs
+			int args_start = record->stack_size - record->nargs;
+
+			// NOTE: Print all arguments to this function
+			// TODO: Have write_value take in a FILE* so we can route this
+			// to stderr
+			for (int i = args_start; i < args_start + record->nargs; ++i)
+			{
+				write_value(vec_get_value(&script->stack, i, script_value_t*), 1);
+				if (i + 1 < args_start + record->nargs)
+					fprintf(stderr, ", ");
+			}
+		}
+
+		fprintf(stderr, ")\n");
 	}
 }
 
@@ -1065,7 +1090,7 @@ static var_decl_t* declare_argument(const char* name, type_tag_t* tag)
 	decl->tag = tag;
 	decl->name = estrdup(name);
 	decl->scope = g_scope;
-	decl->index = -((int)g_cur_func->args.length + 1);
+	decl->index = (int)g_cur_func->args.length;
 	
 	vec_push_back(&g_cur_func->args, &decl);
 	return decl;
@@ -3214,7 +3239,7 @@ static void compile_call(script_t* script, expr_t* exp)
 		nargs += 1;
 	}
 
-	for(int i = exp->callx.args.length - 1; i >= 0; --i)
+	for(int i = 0; i < exp->callx.args.length; ++i)
 	{
 		expr_t* e = vec_get_value(&exp->callx.args, i, expr_t*);
 		compile_value_expr(script, e);
@@ -4366,6 +4391,8 @@ void script_init(script_t* script)
 	g_line = 1;
 	g_file = "none";
 
+	script->atomic_depth = 0;
+	
 	script->userdata = NULL;
 	script->in_extern = 0;
 	
@@ -4384,6 +4411,8 @@ void script_init(script_t* script)
 	script->fp = 0;
 	
 	script->indir_depth = 0;
+
+	vec_init(&script->call_records, sizeof(script_call_record_t));
 
 	vec_init(&script->globals, sizeof(script_value_t*));
 	
@@ -4486,16 +4515,22 @@ static void destroy_all_values(script_t* script)
 static void destroy_module(void* p_module)
 {
 	script_module_t* module = p_module;
+
 	free(module->local_path);
 	free(module->name);
 	free(module->source_code);
+
 	for(int i = 0; i < module->expr_list.length; ++i)
 		delete_expr(vec_get_value(&module->expr_list, i, expr_t*));
 	vec_destroy(&module->expr_list);
+
 	vec_destroy(&module->compile_time_funcs);
 
 	vec_destroy(&module->globals);
 	vec_destroy(&module->functions);
+
+	vec_traverse(&module->all_type_tags, destroy_type_tag);
+
 	vec_destroy(&module->all_type_tags);
 	map_destroy(&module->user_type_tags);
 }
@@ -4758,6 +4793,8 @@ void script_push_string(script_t* script, script_string_t string)
 script_string_t script_pop_string(script_t* script)
 {
 	script_value_t* val = pop_value(script);
+	if (val->type != VAL_STRING)
+		error_exit_script(script, "Expected string but received %s\n", g_value_types[val->type]);
 	return val->string;
 }
 
@@ -4862,6 +4899,30 @@ static void push_stack_frame(script_t* script, word nargs)
 	
 	script->fp = script->stack.length;
 	++script->indir_depth;
+}
+
+static void push_call_record(script_t* script, script_function_t function, word nargs)
+{
+	script_call_record_t record;
+
+	record.stack_size = script->stack.length;
+	record.pc = script->pc - 1;
+	record.fp = script->fp;
+	record.nargs = nargs;
+	record.function = function;
+	record.file = script->cur_file;
+	record.line = script->cur_line;
+
+	vec_push_back(&script->call_records, &record);
+}
+
+static script_call_record_t pop_call_record(script_t* script)
+{
+	script_call_record_t record;
+
+	vec_pop_back(&script->call_records, &record);
+
+	return record;
 }
 
 static void pop_stack_frame(script_t* script)
@@ -5420,7 +5481,7 @@ static void execute_cycle(script_t* script)
 		
 		case OP_WRITE:
 		{
-			write_value(pop_value(script));
+			write_value(pop_value(script), 0);
 			printf("\n");
 		} break;
 		
@@ -5476,19 +5537,24 @@ static void execute_cycle(script_t* script)
 				
 				vector_t args;
 				vec_init(&args, sizeof(script_value_t*));
-
-				args.data = vec_get(&script->stack, script->stack.length - nargs);
+				
+				args.data = nargs > 0 ? vec_get(&script->stack, script->stack.length - nargs) : NULL;
 				args.capacity = args.length = nargs;
+
+				push_call_record(script, function, nargs);
 
 				script->in_extern = 1;
 				vec_get_value(&script->externs, function.index, script_extern_t)(script, &args);
 				script->in_extern = 0;
-				
+
+				pop_call_record(script);
+
 				script->stack.length = new_stack_length;
 			}
 			else
 			{
 				push_stack_frame(script, nargs);
+				push_call_record(script, function, nargs);
 				script->pc = vec_get_value(&script->function_pcs, function.index, int);
 			}
 		} break;
@@ -5497,12 +5563,14 @@ static void execute_cycle(script_t* script)
 		{
 			script->ret_val = NULL;
 			pop_stack_frame(script);
+			pop_call_record(script);
 		} break;
 		
 		case OP_RETURN_VALUE:
 		{
 			script->ret_val = pop_value(script);
 			pop_stack_frame(script);
+			pop_call_record(script);
 		} break;
 
 		case OP_FILE:
@@ -5570,7 +5638,7 @@ void script_parse_file(script_t* script, FILE* in, const char* local_path, const
 
 void script_parse_code(script_t* script, const char* code, const char* local_path, const char* module_name)
 {
-	g_file = module_name;
+	g_file = local_path;
 	g_code = code;
 	g_line = 1;
 	

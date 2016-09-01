@@ -52,5 +52,8 @@
     <Text Include="basic.txt">
       <Filter>Resource Files</Filter>
     </Text>
+    <Text Include="scratch.txt">
+      <Filter>Resource Files</Filter>
+    </Text>
   </ItemGroup>
 </Project>
