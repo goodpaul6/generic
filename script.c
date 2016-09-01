@@ -1465,6 +1465,25 @@ static int get_token(char reset)
 		int i = 0;
 		while(last != '"')
 		{
+			if (last == '\\')
+			{
+				last = get_char();
+				switch (last)
+				{
+					case 'n': last = '\n'; break;
+					case 't': last = '\t'; break;
+					case '0': last = '\0'; break;
+					case 'b': last = '\b'; break;
+					case 'r': last = '\r'; break;
+					case '\'': last = '\''; break;
+					case '"': last = '"'; break;
+					case '\\': last = '\\'; break;
+					default:
+						error_exit("invalid escape sequence char %c\n", last);
+						break;
+				}
+			}
+
 			g_lexeme[i++] = last;
 			last = get_char();
 		}
@@ -3410,13 +3429,16 @@ static int get_struct_type_member_index(type_tag_t* tag, const char* name)
 
 static void compile_file_line_info(script_t* script, expr_t* exp, char ignore_last)
 {
-	if(ignore_last || !g_last_compiled_file || strcmp(g_last_compiled_file, exp->ctx.file) != 0)
+	if (exp->ctx.file)
 	{
-		append_code(script, OP_FILE);
-		append_int(script, register_string(script, exp->ctx.file));
+		if (ignore_last || !g_last_compiled_file || strcmp(g_last_compiled_file, exp->ctx.file) != 0)
+		{
+			append_code(script, OP_FILE);
+			append_int(script, register_string(script, exp->ctx.file));
+		}
+		g_last_compiled_file = exp->ctx.file;
 	}
-	g_last_compiled_file = exp->ctx.file;
-	
+
 	if(ignore_last || g_last_compiled_line != exp->ctx.line)
 	{
 		append_code(script, OP_LINE);

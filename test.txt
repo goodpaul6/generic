@@ -1,3 +1,14 @@
 #import "basic.txt"
 
-write format_string("hello %s", ["world"])
+extern 
+{
+	add_module(string, string) : number
+	compile_module(number) : void
+	run_module(number) : void
+}
+
+var hello : number = add_module("hello", "write format_string(\"hello %s\", module_args)")
+
+compile_module(hello)
+module_args = ["world"]
+run_module(hello)
