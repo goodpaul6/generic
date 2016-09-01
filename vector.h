@@ -22,7 +22,7 @@ typedef int (*vector_compare_t)(const void* data, const void* a, const void* b);
 void vec_init(vector_t* vector, size_t datum_size);
 
 void vec_copy(vector_t* dest, vector_t* source);
-void vec_copy_region(vector_t* dest, vector_t* source, size_t index, size_t start, size_t num);
+void vec_copy_region(vector_t* dest, vector_t* source, size_t dest_index, size_t start, size_t num);
 
 void vec_reserve(vector_t* vector, size_t amount);
 void vec_resize(vector_t* vector, size_t amount, void* p_initial_value);

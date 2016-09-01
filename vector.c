@@ -55,19 +55,8 @@ void vec_copy_region(vector_t* me, vector_t* other, size_t index, size_t start, 
 	if(start < 0 || start > other->length ||
 		start + amount > other->length) error_exit("Attempted to copy from region outside of bounds of vector\n");
 	
-	while(index + amount > me->capacity)
-	{
-		if(me->capacity == 0)
-		{
-			me->capacity = index + amount;
-			vec_realloc(me);
-			break;
-		}
-		
-		me->capacity *= 2;
-		vec_realloc(me);
-	}
-	
+	vec_reserve(me, index + amount);
+
 	if(index + amount > me->length) me->length = index + amount;
 	memcpy(&me->data[index * me->datum_size], &other->data[start * other->datum_size], amount * other->datum_size);
 }

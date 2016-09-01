@@ -3607,7 +3607,7 @@ static void compile_value_expr(script_t* script, expr_t* exp)
 		
 		case EXP_ARRAY_LITERAL:
 		{
-			for(int i = exp->array_literal.values.length - 1; i >= 0; --i)
+			for(int i = 0; i < exp->array_literal.values.length; ++i)
 			{
 				expr_t* e = vec_get_value(&exp->array_literal.values, i, expr_t*);
 				compile_value_expr(script, e);
@@ -5521,14 +5521,9 @@ static void execute_cycle(script_t* script)
 		{
 			int length = read_int(script);
 			vector_t array;
+
 			vec_init(&array, sizeof(script_value_t*));
-			vec_resize(&array, length, NULL);
-			
-			for(int i = 0; i < length; ++i)
-			{
-				script_value_t* val = pop_value(script);
-				vec_set(&array, i, &val);
-			}
+			vec_copy_region(&array, &script->stack, 0, script->stack.length - length, length);
 			
 			script_push_premade_array(script, array);
 		} break;
