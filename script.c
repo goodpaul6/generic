@@ -3708,6 +3708,11 @@ static void ext_add_module(script_t* script, vector_t* args)
 	script_return_top(script);
 }
 
+static void ext_load_module(script_t* script, vector_t* args)
+{
+
+}
+
 static void compile_module(script_t* script, script_module_t* module);
 static void ext_compile_module(script_t* script, vector_t* args)
 {
@@ -5469,24 +5474,15 @@ static void execute_cycle(script_t* script)
 			{
 				int new_stack_length = script->stack.length - nargs;
 				
-				// FIXME: THIS LEAKS FAMMM
-				static char init_args = 0;
-				static vector_t args;
+				vector_t args;
+				vec_init(&args, sizeof(script_value_t*));
 
-				if (!init_args)
-				{
-					init_args = 1;
-					vec_init(&args, sizeof(script_value_t*));
-				}
+				args.data = vec_get(&script->stack, script->stack.length - nargs);
+				args.capacity = args.length = nargs;
 
-				// NOTE: copies argument pointers over to the args vector
-				vec_copy_region(&args, &script->stack, 0, script->stack.length - nargs, nargs);
-				
 				script->in_extern = 1;
 				vec_get_value(&script->externs, function.index, script_extern_t)(script, &args);
 				script->in_extern = 0;
-				
-				vec_clear(&args);
 				
 				script->stack.length = new_stack_length;
 			}
