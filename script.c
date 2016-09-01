@@ -17,6 +17,7 @@ extern "C" {
 #define MAX_LEX_CHARS 256
 #define STACK_SIZE 256
 #define INIT_GC_THRESH 64
+#define INVALID_VAR_DECL_INDEX -9999
 
 typedef unsigned char word;
 
@@ -653,6 +654,127 @@ static void print_stack_trace(script_t* script)
 	}
 }
 
+// NOTE: Searches through each module looking at it's start_pc and
+// end_pc and seeing if it encloses the current pc
+// DO NOT EXPECT THE RETURNED POINTER TO BE VALID AFTER
+// MODULES ARE ADDED
+static script_module_t* get_executing_module(script_t* script)
+{
+	for (int i = 0; i < script->modules.length; ++i)
+	{
+		script_module_t* m = vec_get(&script->modules, i);
+		if (m->start_pc <= script->pc && m->end_pc >= script->pc)
+			return m;
+	}
+
+	return NULL;
+}
+
+static func_decl_t* reference_function(script_t* script, const char* function_name);
+
+static void debug_script(script_t* script)
+{
+	printf("\n");
+
+	char cmdbuf[256];
+
+	while (1)
+	{
+		fgets(cmdbuf, 256, stdin);
+		
+		// NOTE: Prints code in the vicinty of the error
+		if (strcmp(cmdbuf, "list\n") == 0)
+		{
+			script_module_t* mod = get_executing_module(script);
+			if (mod)
+			{
+				char* code = mod->source_code;
+				int line = 1;
+
+				while (code && *code)
+				{
+					char* line_end = strchr(code, '\n');
+
+					int dist = (int)labs(script->cur_line - line);
+					if (dist < 10)
+					{
+						if (dist == 0)
+							printf("error ->");
+						printf("%.*s\n", (int)(line_end - code), code);
+					}
+
+					code = line_end ? line_end + 1 : NULL;
+					++line;
+				}
+			}
+			else
+				printf("Code being executed does not belong to any modules.\n");
+		}
+		else if (strcmp(cmdbuf, "local\n") == 0)
+		{
+			script_call_record_t* record;
+			if (script->call_records.length <= 0)
+			{
+				printf("Not inside function.\n");
+				continue;
+			}
+
+			record = vec_get(&script->call_records, script->call_records.length - 1);
+
+			printf("local name: ");
+			
+			fgets(cmdbuf, 256, stdin);
+			cmdbuf[strcspn(cmdbuf, "\n")] = '\0';
+
+			const char* name = vec_get_value(&script->function_names, record->function.index, char*);
+			
+			func_decl_t* decl = reference_function(script, name);
+			if (!decl)
+			{
+				printf("Unable to retrieve function data.\n");
+				continue;
+			}
+
+			var_decl_t* local = NULL;
+			for (int i = 0; i < decl->locals.length; ++i)
+			{
+				var_decl_t* l = vec_get_value(&decl->locals, i, var_decl_t*);
+				if (strcmp(l->name, cmdbuf) == 0)
+				{
+					local = l;
+					break;
+				}
+			}
+
+			for (int i = 0; i < decl->args.length; ++i)
+			{
+				var_decl_t* l = vec_get_value(&decl->args, i, var_decl_t*);
+				if (strcmp(l->name, cmdbuf) == 0)
+				{
+					local = l;
+					break;
+				}
+			}
+
+			if (!local)
+			{
+				printf("No local by that name.\n");
+				continue;
+			}
+
+			printf("local offset = %d\n", local->index);
+			printf("local value = ");
+
+			script_value_t* val = vec_get_value(&script->stack, script->fp + local->index, script_value_t*);
+			
+			write_value(val, 1);
+			printf("\n");
+		}
+		else if (strcmp(cmdbuf, "stop\n") == 0)
+			break;
+	}
+}
+
 static void error_exit_script(script_t* script, const char* fmt, ...)
 {
 	fprintf(stderr, "\nError (%s:%i):\n", script->cur_file, script->cur_line);
@@ -665,6 +787,8 @@ static void error_exit_script(script_t* script, const char* fmt, ...)
 	fprintf(stderr, "\n");
 	print_stack_trace(script);
 	
+	debug_script(script);
+
 	exit(1);
 }
 
@@ -1090,10 +1214,23 @@ static var_decl_t* declare_argument(const char* name, type_tag_t* tag)
 	decl->tag = tag;
 	decl->name = estrdup(name);
 	decl->scope = g_scope;
-	decl->index = (int)g_cur_func->args.length;
+	decl->index = INVALID_VAR_DECL_INDEX;
 	
 	vec_push_back(&g_cur_func->args, &decl);
 	return decl;
+}
+
+// NOTE: This is to be called after all the arguments to a function
+// are parsed (it will assign an index to them)
+static void finalize_args()
+{
+	if (!g_cur_func) error_exit("Attempting to finalize arguments outside of function\n");
+
+	for (int i = 0; i < g_cur_func->args.length; ++i)
+	{
+		var_decl_t* arg = vec_get_value(&g_cur_func->args, i, var_decl_t*);
+		arg->index = -(int)g_cur_func->args.length + i;
+	}
 }
 
 static void enter_scope()
@@ -1850,6 +1987,8 @@ static expr_t* parse_func(script_t* script)
 		else if(g_cur_tok != TOK_CLOSEPAREN) error_exit_p("Unexpected token '%s'\n", g_token_names[g_cur_tok]);
 	}
 	get_next_token();
+
+	finalize_args();
 	
 	if(g_cur_tok != TOK_COLON) error_exit_p("Expected ':' after ')'\n");
 	get_next_token();
@@ -1947,6 +2086,8 @@ static expr_t* parse_struct(script_t* script)
 				else if(g_cur_tok != TOK_CLOSEPAREN) error_exit_p("Unexpected token '%s'\n", g_token_names[g_cur_tok]);
 			}
 			get_next_token();
+
+			finalize_args();
 				
 			if(g_cur_tok != TOK_COLON) error_exit_p("Expected ':' after ')'\n");
 			get_next_token();
@@ -4854,7 +4995,7 @@ script_native_t* script_pop_native(script_t* script)
 
 script_value_t* script_get_arg(vector_t* args, int index)
 {
-	return vec_get_value(args, args->length - index - 1, script_value_t*);
+	return vec_get_value(args, index, script_value_t*);
 }
 
 static char is_value_null(script_value_t* val)
@@ -5540,7 +5681,7 @@ static void execute_cycle(script_t* script)
 				
 				args.data = nargs > 0 ? vec_get(&script->stack, script->stack.length - nargs) : NULL;
 				args.capacity = args.length = nargs;
-
+				
 				push_call_record(script, function, nargs);
 
 				script->in_extern = 1;

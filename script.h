@@ -209,18 +209,6 @@ typedef struct script_call_record
 	int line;
 } script_call_record_t;
 
-// NOTE: Maps local variable names to frame pointer offsets
-// (Debug info, essentially)
-typedef struct script_function_info
-{
-	char* name;
-	// NOTE: array of char*
-	// first arg is arg_names[0], it's offset is fp - arg_names.length
-	vector_t arg_names;
-	// NOTE: array of char*
-	vector_t local_names;
-} script_function_info_t;
-
 // TODO: ATOMIC STACK
 typedef struct
 {
