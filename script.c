@@ -223,6 +223,8 @@ typedef enum expr_type
 	EXP_RETURN,
 	
 	EXP_EXTERN,
+	EXP_EXTERN_LIST,
+
 	EXP_FUNC,
 
 	EXP_ATOMIC
@@ -330,6 +332,7 @@ typedef struct expr
 		} retx;
 		
 		func_decl_t* extern_decl;
+		vector_t extern_array;
 		
 		struct
 		{
@@ -1730,38 +1733,65 @@ static expr_t* parse_for(script_t* script)
 	return exp;
 }
 
-static expr_t* parse_extern(script_t* script)
+static expr_t* parse_extern_decl(script_t* script)
 {
 	expr_t* exp = create_expr(EXP_EXTERN);
-	get_next_token();
-	
+
 	char* name = estrdup(g_lexeme);
-	
+
 	get_next_token();
-	
+
 	exp->extern_decl = declare_extern(script, name);
-	
-	if(g_cur_tok != TOK_OPENPAREN) error_exit_p("Expected '(' after extern %s\n", name);
+
+	if (g_cur_tok != TOK_OPENPAREN) error_exit_p("Expected '(' after extern %s\n", name);
 	get_next_token();
-	
-	while(g_cur_tok != TOK_CLOSEPAREN)
+
+	while (g_cur_tok != TOK_CLOSEPAREN)
 	{
 		type_tag_t* arg_tag = parse_type_tag(script);
 		vec_push_back(&exp->extern_decl->tag->func.arg_types, &arg_tag);
-		
-		if(g_cur_tok == TOK_COMMA) get_next_token();
-		else if(g_cur_tok != TOK_CLOSEPAREN) error_exit_p("Unexpected token '%s'\n", g_token_names[g_cur_tok]);
+
+		if (g_cur_tok == TOK_COMMA) get_next_token();
+		else if (g_cur_tok != TOK_CLOSEPAREN) error_exit_p("Unexpected token '%s'\n", g_token_names[g_cur_tok]);
 	}
 	get_next_token();
-	
-	if(g_cur_tok != TOK_COLON) error_exit_p("Expected ':' but received '%s'\n", g_token_names[g_cur_tok]);
+
+	if (g_cur_tok != TOK_COLON) error_exit_p("Expected ':' but received '%s'\n", g_token_names[g_cur_tok]);
+	get_next_token();
+
+	exp->extern_decl->tag->func.return_type = parse_type_tag(script);
+
+	free(name);
+
+	return exp;
+}
+
+static expr_t* parse_extern(script_t* script)
+{
 	get_next_token();
 	
-	exp->extern_decl->tag->func.return_type = parse_type_tag(script);
-	
-	free(name);
-	
-	return exp;
+	if (g_cur_tok == TOK_OPENCURLY)
+	{
+		// NOTE: Extern list
+		expr_t* exp = create_expr(EXP_EXTERN_LIST);
+		
+		exp->type = EXP_EXTERN_LIST;
+		vec_init(&exp->extern_array, sizeof(expr_t*));
+
+		get_next_token();
+
+		while (g_cur_tok != TOK_CLOSECURLY)
+		{
+			expr_t* declExp = parse_extern_decl(script);
+			vec_push_back(&exp->extern_array, declExp);
+		}
+
+		get_next_token();
+
+		return exp;
+	}
+
+	return parse_extern_decl(script);
 }
 
 static expr_t* parse_func(script_t* script)
@@ -1940,21 +1970,28 @@ static expr_t* parse_null(script_t* script)
 }
 
 // NOTE: Returns module index
-static int add_module(script_t* script, const char* local_path, const char* code)
+static int add_module(script_t* script, const char* local_path, const char* module_name, const char* code)
 {
 	// NOTE: This'll slow down add module a bit (but who cares, how many modules could you possibly have :)
-	for(int i = 0; i < script->modules.length; ++i)
+	if (local_path)
 	{
-		script_module_t* module = vec_get(&script->modules, i);
-		if (strcmp(module->local_path, local_path) == 0)
-			return i;
+		for (int i = 0; i < script->modules.length; ++i)
+		{
+			script_module_t* module = vec_get(&script->modules, i);
+			if (module->local_path)
+			{
+				if (strcmp(module->local_path, local_path) == 0)
+					return i;
+			}
+		}
 	}
 	
 	script_module_t module;
 	
 	module.start_pc = -1;
 	module.end_pc = -1;
-	module.local_path = estrdup(local_path);
+	module.name = module_name ? estrdup(module_name) : NULL;
+	module.local_path = local_path ? estrdup(local_path) : NULL;
 	module.source_code = estrdup(code);
 	module.parsed = 0;
 	module.compiled = 0;
@@ -1998,7 +2035,7 @@ static void apply_import_directive(script_t* script, const char* filename)
 		fread(code, 1, length, file);
 		code[length] = '\0';
 		
-		add_module(script, path, code);
+		add_module(script, path, NULL, code);
 		
 		free(code);
 		fclose(file);
@@ -2424,7 +2461,15 @@ static void debug_expr(script_t* script, expr_t* exp)
 		} break;
 		
 		case EXP_EXTERN: printf("extern %s", exp->extern_decl->name); break;
-		
+		case EXP_EXTERN_LIST:
+		{
+			for (size_t i = 0; i < exp->extern_array.length; ++i)
+			{
+				expr_t* e = vec_get_value(&exp, i, expr_t*);
+				debug_expr(script, e);
+			}
+		} break;
+
 		case EXP_UNARY: printf("%s", g_token_names[exp->unaryx.op]); debug_expr(script, exp->unaryx.rhs); break;
 		case EXP_BINARY: printf("("); debug_expr(script, exp->binx.lhs); printf(" %s ", g_token_names[exp->binx.op]); debug_expr(script, exp->binx.rhs); printf(")"); break;
 		case EXP_WRITE: printf("write "); debug_expr(script, exp->write); break;
@@ -2484,6 +2529,7 @@ static void resolve_symbols(script_t* script, expr_t* exp)
 		
 		case EXP_NULL:
 		case EXP_EXTERN:
+		case EXP_EXTERN_LIST:
 		case EXP_NUMBER:
 		case EXP_STRING:
 		case EXP_CHAR:
@@ -3062,7 +3108,8 @@ static void resolve_type_tags(script_t* script, void* vexp)
 			}
 		} break;
 		
-		case EXP_EXTERN: break;
+		case EXP_EXTERN:
+		case EXP_EXTERN_LIST: break;
 		
 		case EXP_ARRAY_LITERAL:
 		{
@@ -3362,7 +3409,8 @@ static void compile_value_expr(script_t* script, expr_t* exp)
 			}
 		} break;
 		
-		case EXP_EXTERN: break;
+		case EXP_EXTERN:
+		case EXP_EXTERN_LIST: break;
 		
 		case EXP_NUMBER:
 		{
@@ -3491,6 +3539,7 @@ static void compile_expr(script_t* script, expr_t* exp)
 
 		case EXP_STRUCT_DECL:
 		case EXP_EXTERN:
+		case EXP_EXTERN_LIST:
 		case EXP_VAR:
 		{
 			// Do nothing for these
@@ -3654,7 +3703,7 @@ static void ext_add_module(script_t* script, vector_t* args)
 	const char* name = name_val->string.data;
 	const char* code = code_val->string.data;
 	
-	script_parse_code(script, code, name);
+	script_parse_code(script, code, NULL, name);
 	script_push_number(script, script->modules.length - 1);
 	script_return_top(script);
 }
@@ -3680,7 +3729,7 @@ static void ext_run_module(script_t* script, vector_t* args)
 	script_module_t* module = vec_get(&script->modules, module_index);
 
 	if(!module->compiled)
-		error_exit_script(script, "Attempting to run an uncompiled module '%s'\n", module->local_path);
+		error_exit_script(script, "Attempting to run an uncompiled module '%s'\n", module->name);
 
 	int pc = script->pc;
 	script->pc = module->start_pc;
@@ -4429,10 +4478,11 @@ static void destroy_all_values(script_t* script)
 	script->gc_head = NULL;
 }
 
-static void destroy_modules(void* p_module)
+static void destroy_module(void* p_module)
 {
 	script_module_t* module = p_module;
 	free(module->local_path);
+	free(module->name);
 	free(module->source_code);
 	for(int i = 0; i < module->expr_list.length; ++i)
 		delete_expr(vec_get_value(&module->expr_list, i, expr_t*));
@@ -4447,7 +4497,7 @@ static void destroy_modules(void* p_module)
 
 void script_reset(script_t* script)
 {	
-	vec_traverse(&script->modules, destroy_modules);
+	vec_traverse(&script->modules, destroy_module);
 	vec_clear(&script->modules);
 	
 	destroy_all_values(script);
@@ -5493,19 +5543,19 @@ static void execute_cycle(script_t* script)
 		script->pc = -1;
 }
 
-void script_load_parse_file(script_t* script, const char* filename)
+void script_load_parse_file(script_t* script, const char* filename, const char* module_name)
 {
 	FILE* in = fopen(filename, "rb");
 	
-	if(!in)
+	if (!in)
 		error_exit("Failed to open file '%s'\n", filename);
 	
-	script_parse_file(script, in, filename);
+	script_parse_file(script, in, filename, module_name);
 
 	fclose(in);
 }
 
-void script_parse_file(script_t* script, FILE* in, const char* module_name)
+void script_parse_file(script_t* script, FILE* in, const char* local_path, const char* module_name)
 {
 	fseek(in, 0, SEEK_END);
 	size_t length = ftell(in);
@@ -5517,19 +5567,19 @@ void script_parse_file(script_t* script, FILE* in, const char* module_name)
 	
 	rewind(in);
 	
-	script_parse_code(script, str, module_name);
+	script_parse_code(script, str, local_path, module_name);
 	
 	free(str);
 }
 
-void script_parse_code(script_t* script, const char* code, const char* module_name)
+void script_parse_code(script_t* script, const char* code, const char* local_path, const char* module_name)
 {
 	g_file = module_name;
 	g_code = code;
 	g_line = 1;
 	
 	// NOTE: adding the current module in and parsing it
-	int current_module_index = add_module(script, module_name, code);
+	int current_module_index = add_module(script, local_path, module_name, code);
 
 	script_module_t* module = vec_get(&script->modules, current_module_index);
 	
@@ -5547,15 +5597,7 @@ void script_parse_code(script_t* script, const char* code, const char* module_na
 		script_module_t* module = vec_get(&script->modules, i);
 		
 		if(!module->parsed)
-		{	
-			FILE* file = fopen(module->local_path, "rb");
-			if(!file)
-			{
-				fprintf(stderr, "Failed to open file '%s' for reading\n", module->local_path);
-				fprintf(stderr, "Skipping module: %s\n", module->local_path);
-				continue;
-			}
-		
+		{
 			g_file = module->local_path;
 			g_line = 1;
 			g_code = module->source_code;
@@ -5980,7 +6022,7 @@ static void destroy_cstring(void* p_str)
 
 void script_destroy(script_t* script)
 {
-	vec_traverse(&script->modules, destroy_modules);
+	vec_traverse(&script->modules, destroy_module);
 	vec_destroy(&script->modules);
 	
 	destroy_all_values(script);

@@ -1,8 +1,11 @@
 #import "basic.txt"
 
-extern add_module(string, string) : number
-extern compile_module(number) : void
-extern run_module(number) : void
+extern 
+{
+	add_module(string, string) : number
+	compile_module(number) : void
+	run_module(number) : void
+}
 
 var madd : number = add_module("add", "write module_args[0] + module_args[1]")
 

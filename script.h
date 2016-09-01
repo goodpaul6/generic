@@ -160,6 +160,7 @@ typedef struct script_module
 	size_t start_pc;				// NOTE: when modules are compiled, their starting pc in code is written here
 	size_t end_pc;					// NOTE: when modules are compiled, their last pc in code is written here
 	char* source_code;
+	char* name;
 	char* local_path;
 	char parsed;
 	char compiled;
@@ -254,9 +255,9 @@ void script_bind_extern(script_t* script, const char* name, script_extern_t ext)
 
 void script_reset(script_t* script);
 
-void script_load_parse_file(script_t* script, const char* filename);
-void script_parse_file(script_t* script, FILE* in, const char* module_name);
-void script_parse_code(script_t* script, const char* code, const char* module_name);
+void script_load_parse_file(script_t* script, const char* filename, const char* module_name);
+void script_parse_file(script_t* script, FILE* in, const char* local_path, const char* module_name);
+void script_parse_code(script_t* script, const char* code, const char* local_path, const char* module_name);
 
 void script_disable_warning(script_warning_t warning, char disabled);
 

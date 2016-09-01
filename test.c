@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <assert.h>
+#include <string.h>
 
 int main(int argc, char* argv[])
 {
@@ -19,7 +20,7 @@ int main(int argc, char* argv[])
 	script_disable_warning(WARN_DYNAMIC_ARRAY_LITERAL, 1);
 	script_disable_warning(WARN_ARRAY_DYNAMIC_TO_SPECIFIC, 1);
 	
-	script_load_parse_file(&script, "test.txt");
+	script_load_parse_file(&script, "test.txt", "test");
 	script_compile(&script);
 	
 	for(int i = 2; i < argc; ++i)

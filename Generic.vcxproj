@@ -109,6 +109,10 @@
     <ClInclude Include="script.h" />
     <ClInclude Include="vector.h" />
   </ItemGroup>
+  <ItemGroup>
+    <Text Include="basic.txt" />
+    <Text Include="test.txt" />
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>
