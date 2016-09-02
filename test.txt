@@ -1,4 +1,18 @@
-var x = [[10], [20], [30]]
-var y = x[0]
+extern 
+{
+	array_push(array-dynamic, dynamic) : void	
+	array_pop(array-dynamic) : dynamic
+}
 
-write y
+var fact_table = [] : number
+
+for var i = 0, i < 50, i = i + 1
+	array_push(fact_table, fact(i))
+
+func fact(n : number) : number {
+	if n <= 1 return n
+	return n * fact(n - 1)
+}
+
+for i = 0, i < 50, i = i + 1
+	write array_pop(fact_table)

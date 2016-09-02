@@ -1256,9 +1256,9 @@ static var_decl_t* declare_variable(script_t* script, const char* name, type_tag
 
 		return decl;
 	}
-	else if(!g_cur_func)
+	else if (!g_cur_func)
 		error_exit_p("Attempted to redeclare global variable '%s'\n", name);
-	
+
 	return decl;
 }
 
@@ -1975,6 +1975,8 @@ static expr_t* parse_for(script_t* script)
 	expr_t* exp = create_expr(EXP_FOR);
 	get_next_token();
 
+	++g_scope;
+
 	exp->forx.init = parse_expr(script);
 
 	if (g_cur_tok != TOK_COMMA) error_exit_p("Expected ',' after for initializer\n");
@@ -1987,6 +1989,7 @@ static expr_t* parse_for(script_t* script)
 
 	exp->forx.step = parse_expr(script);
 	exp->forx.body = parse_expr(script);
+	--g_scope;
 
 	return exp;
 }
@@ -4519,6 +4522,31 @@ static void ext_make_array_of_length(script_t* script, vector_t* args)
 	script_return_top(script);
 }
 
+static void ext_array_push(script_t* script, vector_t* args)
+{
+	script_value_t* array_val = script_get_arg(args, 0);
+	script_value_t* value_val = script_get_arg(args, 1);
+
+	vector_t* array = &array_val->array;
+	
+	vec_push_back(array, &value_val);
+}
+
+static void push_value(script_t* script, script_value_t* value);
+
+static void ext_array_pop(script_t* script, vector_t* args)
+{
+	script_value_t* array_val = script_get_arg(args, 0);
+	script_value_t* value;
+
+	vector_t* array = &array_val->array;
+
+	vec_pop_back(array, &value);
+
+	push_value(script, value);
+	script_return_top(script);
+}
+
 static void ext_char_to_number(script_t* script, vector_t* args)
 {
 	script_value_t* val = script_get_arg(args, 0);
@@ -4684,6 +4712,8 @@ static void bind_default_externs(script_t* script)
 	script_bind_extern(script, "insert_expr_into_module", ext_insert_expr_into_module);
 	
 	script_bind_extern(script, "make_array_of_length", ext_make_array_of_length);
+	script_bind_extern(script, "array_push", ext_array_push);
+	script_bind_extern(script, "array_pop", ext_array_pop);
 	
 	script_bind_extern(script, "char_to_number", ext_char_to_number);
 	script_bind_extern(script, "number_to_char", ext_number_to_char);
