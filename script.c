@@ -21,11 +21,14 @@ extern "C" {
 
 typedef unsigned char word;
 
+struct func_decl;
+
 typedef struct
 {
 	int line;
 	const char* file;
 	int scope;
+	struct func_decl* func;
 } context_t;
 
 typedef enum
@@ -1706,6 +1709,7 @@ static expr_t* create_expr(expr_type_t type)
 	exp->ctx.file = g_file;
 	exp->ctx.line = g_line;
 	exp->ctx.scope = g_scope;
+	exp->ctx.func = g_cur_func;
 	exp->type = type;
 	
 	return exp;
@@ -1963,7 +1967,7 @@ static expr_t* parse_while(script_t* script)
 {
 	expr_t* exp = create_expr(EXP_WHILE);
 	get_next_token();
-	
+
 	exp->whilex.cond = parse_expr(script);
 	exp->whilex.body = parse_expr(script);
 	
@@ -2261,8 +2265,10 @@ static int add_module(script_t* script, const char* local_path, const char* modu
 	module.parsed = 0;
 	module.compiled = 0;
 	
+	vec_init(&module.referenced_modules, sizeof(int));
+
 	vec_init(&module.expr_list, sizeof(expr_t*));
-	vec_init(&module.compile_time_funcs, sizeof(expr_t*));
+	vec_init(&module.compile_time_blocks, sizeof(expr_t*));
 	
 	vec_init(&module.globals, sizeof(var_decl_t*));
 	vec_init(&module.functions, sizeof(func_decl_t*));
@@ -2300,8 +2306,11 @@ static void apply_import_directive(script_t* script, const char* filename)
 		fread(code, 1, length, file);
 		code[length] = '\0';
 		
-		add_module(script, path, NULL, code);
+		int module_index = add_module(script, path, NULL, code);
 		
+		script_module_t* current_module = vec_get(&script->modules, g_cur_module_index);
+		vec_push_back(&current_module->referenced_modules, &module_index);
+
 		free(code);
 		fclose(file);
 	}
@@ -2330,14 +2339,14 @@ static expr_t* parse_directive(script_t* script)
 	{
 		get_next_token();
 		
-		if(g_cur_tok != TOK_FUNC) error_exit_p("Expected 'func' after '#on_compile' but received '%s'\n", g_token_names[g_cur_tok]);
-		
-		expr_t* exp = parse_func(script);
+		expr_t* exp = parse_expr(script);
 		
 		script_module_t* cur_module = vec_get(&script->modules, g_cur_module_index);
-		vec_push_back(&cur_module->compile_time_funcs, &exp);
-		
-		return exp;
+		vec_push_back(&cur_module->compile_time_blocks, &exp);
+
+		// NOTE: The compile time block is not a part of the runtime
+		// program.
+		return parse_factor(script);
 	}
 	else
 		error_exit_p("Invalid directive '%s'\n", g_lexeme);
@@ -2732,7 +2741,7 @@ static void debug_expr(script_t* script, expr_t* exp)
 			for (size_t i = 0; i < exp->extern_array.length; ++i)
 			{
 				printf("\t");
-				expr_t* e = vec_get_value(&exp, i, expr_t*);
+				expr_t* e = vec_get_value(&exp->extern_array, i, expr_t*);
 				debug_expr(script, e);
 			}
 			printf("}\n");
@@ -2763,6 +2772,136 @@ static inline void patch_int(script_t* script, int loc, int v)
 	word* vp = (word*)(&v);
 	for(int i = 0; i < sizeof(int) / sizeof(word); ++i)
 		vec_set(&script->code, loc + i, vp++);
+}
+
+static void flatten_expr(vector_t* expr_list, expr_t* exp)
+{
+	vec_push_back(expr_list, &exp);
+
+	switch (exp->type)
+	{
+		case EXP_NULL:
+		case EXP_BOOL:
+		case EXP_CHAR:
+		case EXP_NUMBER:
+		case EXP_STRING:
+		case EXP_EXTERN:
+		case EXP_VAR:
+		case EXP_STRUCT_DECL:
+			break;
+
+		case EXP_EXTERN_LIST:
+		{
+			for (int i = 0; i < exp->extern_array.length; ++i)
+				flatten_expr(expr_list, vec_get_value(&exp->extern_array, i, expr_t*));
+		} break;
+
+		case EXP_DOT:
+		case EXP_COLON:
+		{
+			flatten_expr(expr_list, exp->dotx.value);
+		} break;
+
+		case EXP_STRUCT_NEW:
+		{
+			for (int i = 0; i < exp->newx.init.length; ++i)
+				flatten_expr(expr_list, vec_get_value(&exp->newx.init, i, expr_t*));
+		} break;
+
+		case EXP_PAREN:
+		{
+			flatten_expr(expr_list, exp->paren);
+		} break;
+
+		case EXP_ARRAY_INDEX:
+		{
+			flatten_expr(expr_list, exp->array_index.array);
+			flatten_expr(expr_list, exp->array_index.index);
+		} break;
+
+		case EXP_ARRAY_LITERAL:
+		{
+			for (int i = 0; i < exp->array_literal.values.length; ++i)
+				flatten_expr(expr_list, vec_get_value(&exp->array_literal.values, i, expr_t*));
+		} break;
+		
+		case EXP_UNARY:
+		{
+			flatten_expr(expr_list, exp->unaryx.rhs);
+		} break;
+
+		case EXP_BINARY:
+		{
+			flatten_expr(expr_list, exp->binx.lhs);
+			flatten_expr(expr_list, exp->binx.rhs);
+		} break;
+
+		case EXP_CALL:
+		{
+			flatten_expr(expr_list, exp->callx.func);
+	
+			for (int i = 0; i < exp->callx.args.length; ++i)
+				flatten_expr(expr_list, vec_get_value(&exp->callx.args, i, expr_t*));
+		} break;
+
+		case EXP_RETURN:
+		{
+			flatten_expr(expr_list, exp->retx.value);
+		} break;
+
+		case EXP_BLOCK:
+		{
+			for (int i = 0; i < exp->block.length; ++i)
+				flatten_expr(expr_list, vec_get_value(&exp->block, i, expr_t*));
+		} break;
+
+		case EXP_FUNC:
+		{
+			flatten_expr(expr_list, exp->funcx.body);
+		} break;
+
+		case EXP_ATOMIC:
+		{
+			flatten_expr(expr_list, exp->atomx);
+		} break;
+
+		case EXP_IF:
+		{
+			flatten_expr(expr_list, exp->ifx.cond);
+			flatten_expr(expr_list, exp->ifx.body);
+
+			if (exp->ifx.alt)
+				flatten_expr(expr_list, exp->ifx.alt);
+		} break;
+
+		case EXP_WHILE:
+		{
+			flatten_expr(expr_list, exp->whilex.cond);
+			flatten_expr(expr_list, exp->whilex.body);
+		} break;
+
+		case EXP_FOR:
+		{
+			flatten_expr(expr_list, exp->forx.init);
+			flatten_expr(expr_list, exp->forx.cond);
+			flatten_expr(expr_list, exp->forx.step);
+			flatten_expr(expr_list, exp->forx.body);
+		} break;
+
+		case EXP_WRITE:
+		{
+			flatten_expr(expr_list, exp->write);
+		} break;
+
+		case EXP_LEN:
+		{
+			flatten_expr(expr_list, exp->len);
+		} break;
+
+		default:
+			assert(0);
+			break;
+	}
 }
 
 static void resolve_symbols(script_t* script, expr_t* exp)
@@ -2904,142 +3043,6 @@ static char are_assignment_types_valid(expr_t* lhs, expr_t* rhs)
 {
 	return compare_type_tags(lhs->tag, rhs->tag);
 }
-
-/*static expr_t* deep_copy_expr(expr_t* exp)
-{
-	expr_t* exp_copy = emalloc(sizeof(expr_t));
-	memcpy(exp_copy, exp, sizeof(expr_t));
-
-	switch(exp->type)
-	{
-		case EXP_DOT: case EXP_COLON:
-		{
-			exp_copy->dotx.value = deep_copy_expr(exp->dotx.value);
-		} break;
-		
-		case EXP_STRUCT_NEW:
-		{
-			vec_init(&exp_copy->newx.init, sizeof(expr_t*));
-			
-			for(int i = 0; i < exp->newx.init.length; ++i)
-			{
-				resolve_symbols(vec_get_value(&exp->newx.init, i, expr_t*));
-			}
-		} break;
-		
-		case EXP_STRUCT_DECL:
-		{
-			for(int i = 0; i < exp->struct_tag->ds.members.length; ++i)
-			{
-				type_tag_member_t* mem = vec_get(&exp->struct_tag->ds.members, i);
-				if(mem->default_value)
-					resolve_symbols(mem->default_value);
-			}
-			
-			for(int i = 0; i < exp->struct_tag->ds.functions.length; ++i)
-			{
-				type_mem_fn_t* mem = vec_get(&exp->struct_tag->ds.functions, i);
-				resolve_symbols(mem->body);
-			}
-		} break;
-		
-		case EXP_NULL:
-		case EXP_EXTERN:
-		case EXP_NUMBER:
-		case EXP_STRING:
-		case EXP_CHAR:
-		case EXP_BOOL: break;
-	
-		case EXP_VAR:
-		{
-			if(exp->varx.decl) return;
-			exp->varx.decl = reference_variable(exp->varx.name);
-			if(!exp->varx.decl) 
-			{
-				if(reference_function(exp->varx.name)) return;
-				if(get_type_tag_from_name(exp->varx.name)) return;
-				error_defer_e(exp, "Attempted to reference undeclared entity '%s'\n", exp->varx.name);
-			}
-		} break;
-		
-		case EXP_UNARY:
-		{
-			resolve_symbols(exp->unaryx.rhs);
-		} break;
-		
-		case EXP_BINARY:
-		{
-			resolve_symbols(exp->binx.lhs);
-			resolve_symbols(exp->binx.rhs);
-		} break;
-		
-		case EXP_PAREN:
-		{
-			resolve_symbols(exp->paren);
-		} break;
-		
-		case EXP_BLOCK:
-		{
-			for(int i = 0; i < exp->block.length; ++i)
-				resolve_symbols(vec_get_value(&exp->block, i, expr_t*));
-		} break;
-		
-		case EXP_ARRAY_INDEX:
-		{
-			resolve_symbols(exp->array_index.array);
-			resolve_symbols(exp->array_index.index);
-		} break;
-		
-		case EXP_ARRAY_LITERAL:
-		{
-			for(int i = 0; i < exp->array_literal.values.length; ++i)
-				resolve_symbols(vec_get_value(&exp->array_literal.values, i, expr_t*));
-		} break;
-		
-		case EXP_IF:
-		{
-			resolve_symbols(exp->ifx.cond);
-			resolve_symbols(exp->ifx.body);
-			if(exp->ifx.alt) resolve_symbols(exp->ifx.alt);
-		} break;
-		
-		case EXP_WHILE:
-		{
-			resolve_symbols(exp->whilex.cond);
-			resolve_symbols(exp->whilex.body);
-		} break;
-		
-		case EXP_RETURN:
-		{
-			if(exp->retx.value)
-				resolve_symbols(exp->retx.value);
-		} break;
-		
-		case EXP_CALL:
-		{
-			for(int i = 0; i < exp->callx.args.length; ++i)
-				resolve_symbols(vec_get_value(&exp->callx.args, i, expr_t*));
-			resolve_symbols(exp->callx.func);
-		} break;
-		
-		case EXP_FUNC:
-		{
-			resolve_symbols(exp->funcx.body);
-		} break;
-		
-		case EXP_WRITE:
-		{
-			resolve_symbols(exp->write);
-		} break;
-		
-		case EXP_LEN:
-		{
-			resolve_symbols(exp->len);
-		} break;
-	}
-	
-	return exp_copy;
-}*/
 
 static void finalize_type(const char* key, void* v_tag, void* data)
 {
@@ -4087,22 +4090,47 @@ static void ext_get_module_expr_list(script_t* script, vector_t* args)
 	EXT_CHECK_IF_CT("get_module_expr_list");
 	
 	script_value_t* val = script_get_arg(args, 0);
+	script_value_t* flatten_val = script_get_arg(args, 1);
+
 	int module_index = (int)val->number;
-	
+	char flatten = flatten_val->boolean;
+
 	script_module_t* module = vec_get(&script->modules, module_index);
 	vector_t expr_list;
 
 	vec_init(&expr_list, sizeof(script_value_t*));	
-	
+
 	for(int i = 0; i < module->expr_list.length; ++i)
 	{
-		// TODO: make script_create_native, et al and use those instead
-		script_value_t* exp_val = new_value(script, VAL_NATIVE);
-		
-		exp_val->nat.value = vec_get_value(&module->expr_list, i, expr_t*);
-		exp_val->nat.on_mark = exp_val->nat.on_delete = NULL;
-		
-		vec_push_back(&expr_list, &exp_val); 
+		if (flatten)
+		{
+			vector_t flat;
+			vec_init(&flat, sizeof(expr_t*));
+
+			flatten_expr(&flat, vec_get_value(&module->expr_list, i, expr_t*));
+
+			for (int i = 0; i < flat.length; ++i)
+			{
+				script_value_t* exp_val = new_value(script, VAL_NATIVE);
+
+				exp_val->nat.value = vec_get_value(&flat, i, expr_t*);
+				exp_val->nat.on_mark = exp_val->nat.on_delete = NULL;
+
+				vec_push_back(&expr_list, &exp_val);
+			}
+
+			vec_destroy(&flat);
+		}
+		else
+		{
+			// TODO: make script_create_native, et al and use those instead
+			script_value_t* exp_val = new_value(script, VAL_NATIVE);
+
+			exp_val->nat.value = vec_get_value(&module->expr_list, i, expr_t*);
+			exp_val->nat.on_mark = exp_val->nat.on_delete = NULL;
+
+			vec_push_back(&expr_list, &exp_val);
+		}
 	}
 
 	script_push_premade_array(script, expr_list);
@@ -4881,6 +4909,8 @@ static void destroy_module(void* p_module)
 {
 	script_module_t* module = p_module;
 
+	vec_destroy(&module->referenced_modules);
+
 	free(module->local_path);
 	free(module->name);
 	free(module->source_code);
@@ -4889,7 +4919,7 @@ static void destroy_module(void* p_module)
 		delete_expr(vec_get_value(&module->expr_list, i, expr_t*));
 	vec_destroy(&module->expr_list);
 
-	vec_destroy(&module->compile_time_funcs);
+	vec_destroy(&module->compile_time_blocks);
 
 	vec_destroy(&module->globals);
 	vec_destroy(&module->functions);
@@ -6060,63 +6090,89 @@ static void compile_module(script_t* script, script_module_t* module)
 	if(!module->compiled)
 	{
 		module->start_pc = script->code.length;
-		
-		// NOTE: this happens twice, once before and once after
-		check_all_tags_defined(script);
-		finalize_types(script);
-		
-		// TODO: check all the types and definitions on this functions
-		// and the types they reference
-		for(int i = 0; i < module->compile_time_funcs.length; ++i)
-		{
-			// NOTE: setup script for compile-time execution
-			vec_clear(&script->stack);
-			allocate_globals(script);
 
-			// TODO: find out what functions this function references and then do that
-			expr_t* exp = vec_get_value(&module->compile_time_funcs, i, expr_t*);		
-			
-			char prev_error = g_has_error;
-			resolve_symbols(script, exp);
-			symbol_error = prev_error ? 0 : g_has_error;
-			if(!symbol_error) resolve_type_tags(script, exp);
-		
-			//debug_expr(script, node);
-			//printf("\n");
-		
-			if(!g_has_error)
+		for (int pass = 0; pass <= 1; ++pass)
+		{
+			// NOTE: Skip first pass if there is no compile
+			// time code
+			if (module->compile_time_blocks.length == 0)
+				pass = 1;
+
+			check_all_tags_defined(script);
+			finalize_types(script);
+
+			// NOTE: We must compile all referenced modules so that this 
+			// module can access their code
+			for (int i = 0; i < module->referenced_modules.length; ++i)
 			{
-				compile_expr(script, exp);
-			
-				printf("executing function '%s'\n", exp->funcx.decl->name);
-				script->pc = vec_get_value(&script->function_pcs, exp->funcx.decl->index, int);
-				while(script->pc >= 0)
-					execute_cycle(script);
-			}
-			else
-				error_exit("Found errors in compile-time code. Stopping compilation\n");
-		}
-		
-		vec_resize(&script->code, module->start_pc, NULL);
+				script_module_t* ref_module = vec_get(&script->modules, vec_get_value(&module->referenced_modules, i, int));
 
-		check_all_tags_defined(script);
-		finalize_types(script);
-		
-		for(int expr_index = 0; expr_index < module->expr_list.length; ++expr_index)
-		{
-			expr_t* node = vec_get_value(&module->expr_list, expr_index, expr_t*);
-		
-			char prev_error = g_has_error;
-			resolve_symbols(script, node);
-			symbol_error = prev_error ? 0 : g_has_error;
-			if(!symbol_error) resolve_type_tags(script, node);
-		
-			//debug_expr(script, node);
-			//printf("\n");
-		
-			if(!g_has_error) compile_expr(script, node);
+				// NOTE: This will compile its referenced modules too
+				compile_module(script, ref_module);
+			}
+
+			// NOTE: Pass to resolve symbols and types
+			for (int expr_index = 0; expr_index < module->expr_list.length; ++expr_index)
+			{
+				expr_t* node = vec_get_value(&module->expr_list, expr_index, expr_t*);
+
+				char prev_error = g_has_error;
+				resolve_symbols(script, node);
+				symbol_error = prev_error ? 0 : g_has_error;
+				if (!symbol_error) resolve_type_tags(script, node);
+			}
+
+			if (g_has_error) error_exit("Errors in script code. Stopping...\n");
+
+			for (int expr_index = 0; expr_index < module->expr_list.length; ++expr_index)
+			{
+				expr_t* node = vec_get_value(&module->expr_list, expr_index, expr_t*);
+				compile_expr(script, node);
+			}
+			
+			// NOTE: The first pass is the compile-time execution pass
+			if (pass == 0)
+			{
+				int ct_code_start = script->code.length;
+
+				for (int i = 0; i < module->compile_time_blocks.length; ++i)
+				{
+					expr_t* exp = vec_get_value(&module->compile_time_blocks, i, expr_t*);
+
+					char prev_error = g_has_error;
+					resolve_symbols(script, exp);
+					symbol_error = prev_error ? 0 : g_has_error;
+					if (!symbol_error) resolve_type_tags(script, exp);
+
+					//debug_expr(script, node);
+					//printf("\n");
+
+					if (!g_has_error)
+						compile_expr(script, exp);
+					else
+						error_exit("Found errors in compile-time code. Stopping compilation\n");
+				}
+
+				// NOTE: Must stop after all compile time code is executed
+				append_code(script, OP_HALT);
+
+				// NOTE: setup script for compile-time execution
+				vec_clear(&script->stack);
+				allocate_globals(script);
+
+				printf("Executing compile-time code...\n");
+
+				script->pc = module->start_pc;
+				while (script->pc >= 0)
+					execute_cycle(script);
+
+				printf("Finished compile-time execution.\n");
+
+				// NOTE: Reset the script code so it doesn't include the compile time code
+				vec_resize(&script->code, ct_code_start, NULL);
+			}
 		}
-		
+
 		module->end_pc = script->code.length;
 		module->compiled = 1;
 	}
@@ -6138,11 +6194,8 @@ void script_compile(script_t* script)
 	 * 
 	 * ^ that will likely crash if b code is run after a code cause the 'important_global_variable' is uninitialized
 	 */ 
-	for(int i = script->modules.length - 1; i >= 0; --i)
-	{
-		script_module_t* module = vec_get(&script->modules, i);
-		compile_module(script, module);
-	}
+	// NOTE: This automatically compiles dependencies
+	compile_module(script, vec_get(&script->modules, 0));
 	
 	if(g_has_error) error_exit("Found errors in script code. Stopping compilation\n");
 }

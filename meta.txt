@@ -14,7 +14,7 @@ extern
 
 	get_current_module_index() : number
 	get_module_source_code(number) : string
-	get_module_expr_list(number) : array-native
+	get_module_expr_list(number, bool) : array-native
 
 	get_expr_kind(native) : number
 
@@ -39,3 +39,45 @@ extern
 
 	get_func_expr_decl(native) : native
 }
+
+var expr_kind_null			= 0
+
+var expr_kind_struct_decl	= 1
+var expr_kind_struct_new	= 2
+
+var expr_kind_colon			= 3
+var expr_kind_dot			= 4
+
+var expr_kind_var			= 5
+
+var expr_kind_array_index	= 6
+
+var expr_kind_bool			= 7
+var expr_kind_char			= 8
+var expr_kind_number		= 9
+var expr_kind_string		= 10
+
+var expr_kind_len			= 11
+var expr_kind_write			= 12
+
+var expr_kind_unary			= 13
+var expr_kind_binary		= 14
+
+var expr_kind_call			= 15
+
+var expr_kind_paren			= 16
+var expr_kind_array_literal	= 17
+var expr_kind_block			= 18
+
+var expr_kind_if			= 19
+var expr_kind_while			= 20
+var expr_kind_for			= 21
+
+var expr_kind_return		= 22
+
+var expr_kind_extern		= 23
+var expr_kind_extern_list	= 24
+
+var expr_kind_func			= 25
+
+var expr_kind_atom			= 26

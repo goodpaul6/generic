@@ -157,6 +157,8 @@ typedef struct script_value
 
 typedef struct script_module
 {
+	vector_t referenced_modules;	// NOTE: array of int's indices into script_t modules
+
 	size_t start_pc;				// NOTE: when modules are compiled, their starting pc in code is written here
 	size_t end_pc;					// NOTE: when modules are compiled, their last pc in code is written here
 	char* source_code;
@@ -165,7 +167,8 @@ typedef struct script_module
 	char parsed;
 	char compiled;
 	vector_t expr_list;
-	vector_t compile_time_funcs;	// NOTE: array of expr_t's which should be executed when the module is compiled
+	
+	vector_t compile_time_blocks;	// NOTE: array of expr_t's (any expression type) which should be executed when the module is compiled
 
 	vector_t all_type_tags;			// NOTE: array of type_tag_t's
 	hashmap_t user_type_tags;		// NOTE: hashmap of char* to type_tag_t's for struct tags

@@ -8,8 +8,8 @@ extern number_to_string(number) : string
 func is_alpha(c : char) : bool
 {
 	var n : number = char_to_number(c)
-	if n >= 'a' && n <= 'z' &&
-	   n >= 'A' && n <= 'Z'
+	if n >= char_to_number('a') && n <= char_to_number('z') &&
+	   n >= char_to_number('A') && n <= char_to_number('Z')
 		return true
 	
 	return false
@@ -19,7 +19,7 @@ func is_digit(c : char) : bool
 {
 	var n : number = char_to_number(c)
 	
-	if n >= '0' && n <= '9' return true
+	if n >= char_to_number('0') && n <= char_to_number('9') return true
 	
 	return false
 }
