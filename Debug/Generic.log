@@ -1,116 +1,117 @@
 ﻿  script.c
-script.c(591): warning C4018: '<': signed/unsigned mismatch
-script.c(598): warning C4018: '<': signed/unsigned mismatch
-script.c(605): warning C4018: '<': signed/unsigned mismatch
-script.c(612): warning C4018: '<': signed/unsigned mismatch
-script.c(663): warning C4018: '<': signed/unsigned mismatch
-script.c(666): warning C4018: '<=': signed/unsigned mismatch
-script.c(666): warning C4018: '>=': signed/unsigned mismatch
-script.c(745): warning C4018: '<': signed/unsigned mismatch
-script.c(755): warning C4018: '<': signed/unsigned mismatch
-script.c(796): warning C4018: '>=': signed/unsigned mismatch
-script.c(800): warning C4018: '<': signed/unsigned mismatch
-script.c(810): warning C4018: '<': signed/unsigned mismatch
-script.c(858): warning C4996: 'strcpy': This function or variable may be unsafe. Consider using strcpy_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
+script.c(592): warning C4018: '<': signed/unsigned mismatch
+script.c(599): warning C4018: '<': signed/unsigned mismatch
+script.c(606): warning C4018: '<': signed/unsigned mismatch
+script.c(613): warning C4018: '<': signed/unsigned mismatch
+script.c(664): warning C4018: '<': signed/unsigned mismatch
+script.c(667): warning C4018: '<=': signed/unsigned mismatch
+script.c(667): warning C4018: '>=': signed/unsigned mismatch
+script.c(746): warning C4018: '<': signed/unsigned mismatch
+script.c(756): warning C4018: '<': signed/unsigned mismatch
+script.c(797): warning C4018: '>=': signed/unsigned mismatch
+script.c(801): warning C4018: '<': signed/unsigned mismatch
+script.c(811): warning C4018: '<': signed/unsigned mismatch
+script.c(859): warning C4996: 'strcpy': This function or variable may be unsafe. Consider using strcpy_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
   C:\Program Files (x86)\Windows Kits\10\Include\10.0.10240.0\ucrt\string.h(119): note: see declaration of 'strcpy'
-script.c(887): warning C4018: '<': signed/unsigned mismatch
+script.c(888): warning C4018: '<': signed/unsigned mismatch
 script.c(906): warning C4018: '<': signed/unsigned mismatch
-script.c(922): warning C4018: '<': signed/unsigned mismatch
-script.c(946): warning C4018: '<': signed/unsigned mismatch
-script.c(1040): warning C4018: '<': signed/unsigned mismatch
-script.c(1096): warning C4018: '<': signed/unsigned mismatch
-script.c(1131): warning C4018: '<': signed/unsigned mismatch
-script.c(1152): warning C4018: '<': signed/unsigned mismatch
-script.c(1281): warning C4018: '<': signed/unsigned mismatch
-script.c(1297): warning C4018: '<': signed/unsigned mismatch
-script.c(1312): warning C4018: '<': signed/unsigned mismatch
-script.c(1319): warning C4018: '<': signed/unsigned mismatch
-script.c(1326): warning C4018: '<': signed/unsigned mismatch
-script.c(1329): warning C4018: '<': signed/unsigned mismatch
-script.c(1368): warning C4018: '<': signed/unsigned mismatch
-script.c(1400): warning C4018: '<': signed/unsigned mismatch
-script.c(1403): warning C4018: '<': signed/unsigned mismatch
-script.c(1665): warning C4018: '<': signed/unsigned mismatch
-script.c(1677): warning C4018: '<': signed/unsigned mismatch
-script.c(1686): warning C4996: 'strcpy': This function or variable may be unsafe. Consider using strcpy_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
+script.c(914): warning C4018: '<': signed/unsigned mismatch
+script.c(930): warning C4018: '<': signed/unsigned mismatch
+script.c(954): warning C4018: '<': signed/unsigned mismatch
+script.c(1048): warning C4018: '<': signed/unsigned mismatch
+script.c(1104): warning C4018: '<': signed/unsigned mismatch
+script.c(1139): warning C4018: '<': signed/unsigned mismatch
+script.c(1160): warning C4018: '<': signed/unsigned mismatch
+script.c(1289): warning C4018: '<': signed/unsigned mismatch
+script.c(1305): warning C4018: '<': signed/unsigned mismatch
+script.c(1320): warning C4018: '<': signed/unsigned mismatch
+script.c(1327): warning C4018: '<': signed/unsigned mismatch
+script.c(1334): warning C4018: '<': signed/unsigned mismatch
+script.c(1337): warning C4018: '<': signed/unsigned mismatch
+script.c(1376): warning C4018: '<': signed/unsigned mismatch
+script.c(1408): warning C4018: '<': signed/unsigned mismatch
+script.c(1411): warning C4018: '<': signed/unsigned mismatch
+script.c(1673): warning C4018: '<': signed/unsigned mismatch
+script.c(1685): warning C4018: '<': signed/unsigned mismatch
+script.c(1694): warning C4996: 'strcpy': This function or variable may be unsafe. Consider using strcpy_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
   C:\Program Files (x86)\Windows Kits\10\Include\10.0.10240.0\ucrt\string.h(119): note: see declaration of 'strcpy'
-script.c(2145): warning C4996: 'sprintf': This function or variable may be unsafe. Consider using sprintf_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
+script.c(2159): warning C4996: 'sprintf': This function or variable may be unsafe. Consider using sprintf_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
   C:\Program Files (x86)\Windows Kits\10\Include\10.0.10240.0\ucrt\stdio.h(1769): note: see declaration of 'sprintf'
-script.c(2226): warning C4018: '<': signed/unsigned mismatch
-script.c(2272): warning C4996: 'strcpy': This function or variable may be unsafe. Consider using strcpy_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
+script.c(2240): warning C4018: '<': signed/unsigned mismatch
+script.c(2286): warning C4996: 'strcpy': This function or variable may be unsafe. Consider using strcpy_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
   C:\Program Files (x86)\Windows Kits\10\Include\10.0.10240.0\ucrt\string.h(119): note: see declaration of 'strcpy'
-script.c(2273): warning C4996: 'strcpy': This function or variable may be unsafe. Consider using strcpy_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
+script.c(2287): warning C4996: 'strcpy': This function or variable may be unsafe. Consider using strcpy_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
   C:\Program Files (x86)\Windows Kits\10\Include\10.0.10240.0\ucrt\string.h(119): note: see declaration of 'strcpy'
-script.c(2275): warning C4996: 'fopen': This function or variable may be unsafe. Consider using fopen_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
+script.c(2289): warning C4996: 'fopen': This function or variable may be unsafe. Consider using fopen_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
   C:\Program Files (x86)\Windows Kits\10\Include\10.0.10240.0\ucrt\stdio.h(205): note: see declaration of 'fopen'
-script.c(2627): warning C4018: '<': signed/unsigned mismatch
-script.c(2630): warning C4018: '<': signed/unsigned mismatch
-script.c(2638): warning C4018: '<': signed/unsigned mismatch
-script.c(2650): warning C4018: '<': signed/unsigned mismatch
-script.c(2654): warning C4018: '<': signed/unsigned mismatch
-script.c(2702): warning C4018: '<': signed/unsigned mismatch
-script.c(2706): warning C4018: '<': signed/unsigned mismatch
-script.c(2716): warning C4047: 'function': 'vector_t *' differs in levels of indirection from 'expr_t **'
-script.c(2716): warning C4024: 'vec_get': different types for formal and actual parameter 1
-script.c(2764): warning C4018: '<': signed/unsigned mismatch
-script.c(2770): warning C4018: '<': signed/unsigned mismatch
-script.c(2816): warning C4018: '<': signed/unsigned mismatch
-script.c(2828): warning C4018: '<': signed/unsigned mismatch
-script.c(2861): warning C4018: '<': signed/unsigned mismatch
-script.c(3031): warning C4018: '<': signed/unsigned mismatch
-script.c(3035): warning C4018: '<': signed/unsigned mismatch
-script.c(3068): warning C4018: '<': signed/unsigned mismatch
-script.c(3087): warning C4996: 'strcpy': This function or variable may be unsafe. Consider using strcpy_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
+script.c(2641): warning C4018: '<': signed/unsigned mismatch
+script.c(2644): warning C4018: '<': signed/unsigned mismatch
+script.c(2652): warning C4018: '<': signed/unsigned mismatch
+script.c(2664): warning C4018: '<': signed/unsigned mismatch
+script.c(2668): warning C4018: '<': signed/unsigned mismatch
+script.c(2716): warning C4018: '<': signed/unsigned mismatch
+script.c(2720): warning C4018: '<': signed/unsigned mismatch
+script.c(2732): warning C4047: 'function': 'vector_t *' differs in levels of indirection from 'expr_t **'
+script.c(2732): warning C4024: 'vec_get': different types for formal and actual parameter 1
+script.c(2781): warning C4018: '<': signed/unsigned mismatch
+script.c(2787): warning C4018: '<': signed/unsigned mismatch
+script.c(2833): warning C4018: '<': signed/unsigned mismatch
+script.c(2845): warning C4018: '<': signed/unsigned mismatch
+script.c(2878): warning C4018: '<': signed/unsigned mismatch
+script.c(3048): warning C4018: '<': signed/unsigned mismatch
+script.c(3052): warning C4018: '<': signed/unsigned mismatch
+script.c(3085): warning C4018: '<': signed/unsigned mismatch
+script.c(3104): warning C4996: 'strcpy': This function or variable may be unsafe. Consider using strcpy_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
   C:\Program Files (x86)\Windows Kits\10\Include\10.0.10240.0\ucrt\string.h(119): note: see declaration of 'strcpy'
-script.c(3089): warning C4996: 'strcpy': This function or variable may be unsafe. Consider using strcpy_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
+script.c(3106): warning C4996: 'strcpy': This function or variable may be unsafe. Consider using strcpy_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
   C:\Program Files (x86)\Windows Kits\10\Include\10.0.10240.0\ucrt\string.h(119): note: see declaration of 'strcpy'
-script.c(3128): warning C4018: '<': signed/unsigned mismatch
-script.c(3163): warning C4018: '<': signed/unsigned mismatch
-script.c(3179): warning C4018: '<': signed/unsigned mismatch
-script.c(3309): warning C4018: '<': signed/unsigned mismatch
-script.c(3334): warning C4018: '<': signed/unsigned mismatch
-script.c(3364): warning C4018: '<': signed/unsigned mismatch
-script.c(3374): warning C4018: '<': signed/unsigned mismatch
-script.c(3465): warning C4018: '<': signed/unsigned mismatch
-script.c(3483): warning C4018: '<': signed/unsigned mismatch
-script.c(3621): warning C4018: '<': signed/unsigned mismatch
-script.c(3800): warning C4018: '<': signed/unsigned mismatch
-script.c(3882): warning C4018: '<': signed/unsigned mismatch
-script.c(3927): warning C4018: '<': signed/unsigned mismatch
-script.c(4000): warning C4018: '<': signed/unsigned mismatch
-script.c(4037): warning C4018: '<': signed/unsigned mismatch
-script.c(4074): warning C4018: '<': signed/unsigned mismatch
-script.c(4201): warning C4018: '<': signed/unsigned mismatch
-script.c(4383): warning C4018: '<': signed/unsigned mismatch
-script.c(4484): warning C4996: 'sprintf': This function or variable may be unsafe. Consider using sprintf_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
+script.c(3172): warning C4018: '<': signed/unsigned mismatch
+script.c(3207): warning C4018: '<': signed/unsigned mismatch
+script.c(3223): warning C4018: '<': signed/unsigned mismatch
+script.c(3366): warning C4018: '<': signed/unsigned mismatch
+script.c(3391): warning C4018: '<': signed/unsigned mismatch
+script.c(3421): warning C4018: '<': signed/unsigned mismatch
+script.c(3431): warning C4018: '<': signed/unsigned mismatch
+script.c(3522): warning C4018: '<': signed/unsigned mismatch
+script.c(3540): warning C4018: '<': signed/unsigned mismatch
+script.c(3678): warning C4018: '<': signed/unsigned mismatch
+script.c(3857): warning C4018: '<': signed/unsigned mismatch
+script.c(3939): warning C4018: '<': signed/unsigned mismatch
+script.c(3984): warning C4018: '<': signed/unsigned mismatch
+script.c(4057): warning C4018: '<': signed/unsigned mismatch
+script.c(4094): warning C4018: '<': signed/unsigned mismatch
+script.c(4131): warning C4018: '<': signed/unsigned mismatch
+script.c(4258): warning C4018: '<': signed/unsigned mismatch
+script.c(4440): warning C4018: '<': signed/unsigned mismatch
+script.c(4541): warning C4996: 'sprintf': This function or variable may be unsafe. Consider using sprintf_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
   C:\Program Files (x86)\Windows Kits\10\Include\10.0.10240.0\ucrt\stdio.h(1769): note: see declaration of 'sprintf'
-script.c(4801): warning C4018: '<': signed/unsigned mismatch
-script.c(4870): warning C4018: '<': signed/unsigned mismatch
-script.c(4878): warning C4018: '<': signed/unsigned mismatch
-script.c(4895): warning C4018: '<': signed/unsigned mismatch
-script.c(4901): warning C4018: '<': signed/unsigned mismatch
-script.c(5056): warning C4996: 'strcpy': This function or variable may be unsafe. Consider using strcpy_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
+script.c(4858): warning C4018: '<': signed/unsigned mismatch
+script.c(4927): warning C4018: '<': signed/unsigned mismatch
+script.c(4935): warning C4018: '<': signed/unsigned mismatch
+script.c(4952): warning C4018: '<': signed/unsigned mismatch
+script.c(4958): warning C4018: '<': signed/unsigned mismatch
+script.c(5113): warning C4996: 'strcpy': This function or variable may be unsafe. Consider using strcpy_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
   C:\Program Files (x86)\Windows Kits\10\Include\10.0.10240.0\ucrt\string.h(119): note: see declaration of 'strcpy'
-script.c(5066): warning C4996: 'strcpy': This function or variable may be unsafe. Consider using strcpy_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
+script.c(5123): warning C4996: 'strcpy': This function or variable may be unsafe. Consider using strcpy_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
   C:\Program Files (x86)\Windows Kits\10\Include\10.0.10240.0\ucrt\string.h(119): note: see declaration of 'strcpy'
-script.c(5248): warning C4018: '<': signed/unsigned mismatch
-script.c(5505): warning C4018: '<': signed/unsigned mismatch
-script.c(5521): warning C4018: '>=': signed/unsigned mismatch
-script.c(5644): warning C4018: '>=': signed/unsigned mismatch
-script.c(5878): warning C4018: '>=': signed/unsigned mismatch
-script.c(5884): warning C4996: 'fopen': This function or variable may be unsafe. Consider using fopen_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
+script.c(5305): warning C4018: '<': signed/unsigned mismatch
+script.c(5562): warning C4018: '<': signed/unsigned mismatch
+script.c(5578): warning C4018: '>=': signed/unsigned mismatch
+script.c(5702): warning C4018: '>=': signed/unsigned mismatch
+script.c(5936): warning C4018: '>=': signed/unsigned mismatch
+script.c(5942): warning C4996: 'fopen': This function or variable may be unsafe. Consider using fopen_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
   C:\Program Files (x86)\Windows Kits\10\Include\10.0.10240.0\ucrt\stdio.h(205): note: see declaration of 'fopen'
-script.c(5931): warning C4018: '<': signed/unsigned mismatch
-script.c(5982): warning C4018: '<': signed/unsigned mismatch
-script.c(6017): warning C4018: '<': signed/unsigned mismatch
-script.c(6121): warning C4018: '<': signed/unsigned mismatch
-script.c(6124): warning C4018: '>=': signed/unsigned mismatch
-script.c(6124): warning C4018: '<': signed/unsigned mismatch
-script.c(6136): warning C4018: '<': signed/unsigned mismatch
-script.c(6170): warning C4018: '<': signed/unsigned mismatch
-script.c(6207): warning C4018: '<': signed/unsigned mismatch
-script.c(6249): warning C4018: '<': signed/unsigned mismatch
-script.c(6305): warning C4018: '<': signed/unsigned mismatch
-script.c(6316): warning C4018: '<': signed/unsigned mismatch
+script.c(5989): warning C4018: '<': signed/unsigned mismatch
+script.c(6040): warning C4018: '<': signed/unsigned mismatch
+script.c(6075): warning C4018: '<': signed/unsigned mismatch
+script.c(6179): warning C4018: '<': signed/unsigned mismatch
+script.c(6182): warning C4018: '>=': signed/unsigned mismatch
+script.c(6182): warning C4018: '<': signed/unsigned mismatch
+script.c(6194): warning C4018: '<': signed/unsigned mismatch
+script.c(6228): warning C4018: '<': signed/unsigned mismatch
+script.c(6265): warning C4018: '<': signed/unsigned mismatch
+script.c(6307): warning C4018: '<': signed/unsigned mismatch
+script.c(6363): warning C4018: '<': signed/unsigned mismatch
+script.c(6374): warning C4018: '<': signed/unsigned mismatch
   Generic.vcxproj -> C:\Users\Apaar\Dropbox\C utilities\generic\Debug\Generic.exe
   Generic.vcxproj -> C:\Users\Apaar\Dropbox\C utilities\generic\Debug\Generic.pdb (Full PDB)

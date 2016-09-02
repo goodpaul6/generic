@@ -1,18 +1,4 @@
-#import "meta.txt"
+var x = [[10], [20], [30]]
+var y = x[0]
 
-#on_compile func gen_fact_func() : void
-{
-	var mod : number = get_current_module_index()
-
-	var expr_list : array-native = parse_code("\
-		func fact(n : number) : number
-		{ 
-			if n <= 1 return n 
-			return n * fact(n - 1)
-		}
-		
-		write fact(5)")
-
-	for var i : number = 0, i < len expr_list, i = i + 1
-		add_expr_to_module(mod, expr_list[i])
-}
+write y

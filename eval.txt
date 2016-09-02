@@ -1,0 +1,17 @@
+extern 
+{
+	add_module(string, string) : number
+	compile_module(number) : void
+	run_module(number) : void
+}
+
+var eval_args : array-dynamic
+
+func eval(code : string, args : array-dynamic) : void
+{
+	eval_args = args
+
+	var m : number = add_module("eval", code)
+	compile_module(m)
+	run_module(m)
+}

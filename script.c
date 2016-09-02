@@ -41,7 +41,8 @@ typedef enum
 	TAG_NATIVE,
 	NUM_BUILTIN_TAGS,
 	
-	TAG_STRUCT
+	TAG_STRUCT,
+	TAG_UNKNOWN
 } tag_t;
 
 typedef struct type_tag
@@ -899,7 +900,14 @@ static void delete_expr(expr_t* exp)
 			case EXP_CHAR:
 			case EXP_NUMBER:
 			case EXP_STRING: break;
-			
+
+			case EXP_EXTERN_LIST:
+			{
+				for (int i = 0; i < exp->extern_array.length; ++i)
+					delete_expr(vec_get_value(&exp->extern_array, i, expr_t*));
+				vec_destroy(&exp->extern_array);
+			} break;
+
 			case EXP_PAREN: delete_expr(exp->paren); break;
 			case EXP_BLOCK:
 			{
@@ -1073,7 +1081,7 @@ static type_tag_t* get_type_tag_from_name(script_t* script, const char* name)
 
 static char is_type_tag(type_tag_t* tag, tag_t type)
 {
-	return tag->type == type || (tag->type != TAG_VOID && tag->type == TAG_DYNAMIC);
+	return tag->type == type || (tag->type != TAG_VOID && (tag->type == TAG_DYNAMIC));
 }
 
 static char compare_type_tags(type_tag_t* a, type_tag_t* b)
@@ -1811,7 +1819,13 @@ static expr_t* parse_var(script_t* script)
 	
 	get_next_token();
 			
-	if(g_cur_tok != TOK_COLON) error_exit_p("Expected ':' after '%s'\n", exp->varx.name);
+	if (g_cur_tok != TOK_COLON)
+	{
+		// NOTE: Type not given so it remains null until resolved
+		exp->varx.decl = declare_variable(script, exp->varx.name, create_type_tag(script, TAG_UNKNOWN));
+		return exp;
+	}
+
 	get_next_token();
 	
 	type_tag_t* tag = parse_type_tag(script);
@@ -2027,7 +2041,7 @@ static expr_t* parse_extern(script_t* script)
 		while (g_cur_tok != TOK_CLOSECURLY)
 		{
 			expr_t* declExp = parse_extern_decl(script);
-			vec_push_back(&exp->extern_array, declExp);
+			vec_push_back(&exp->extern_array, &declExp);
 		}
 
 		get_next_token();
@@ -2711,11 +2725,14 @@ static void debug_expr(script_t* script, expr_t* exp)
 		case EXP_EXTERN: printf("extern %s", exp->extern_decl->name); break;
 		case EXP_EXTERN_LIST:
 		{
+			printf("extern {\n");
 			for (size_t i = 0; i < exp->extern_array.length; ++i)
 			{
+				printf("\t");
 				expr_t* e = vec_get_value(&exp, i, expr_t*);
 				debug_expr(script, e);
 			}
+			printf("}\n");
 		} break;
 
 		case EXP_UNARY: printf("%s", g_token_names[exp->unaryx.op]); debug_expr(script, exp->unaryx.rhs); break;
@@ -3097,6 +3114,33 @@ static func_decl_t* get_struct_member_function(script_t* script, const char* str
 	return result;
 }
 
+// NOTE: Recurses in search for an EXP_VAR
+// in order to resolve a var_decl (which should exist because
+// resolve_symbols has been called). 
+static var_decl_t* get_root_var_decl(expr_t* exp)
+{
+	switch (exp->type)
+	{
+		case EXP_VAR:
+		{
+			return exp->varx.decl;
+		} break;
+
+		case EXP_CALL:
+		{
+			return get_root_var_decl(exp->callx.func);
+		} break;
+
+		case EXP_ARRAY_INDEX:
+		{
+			return get_root_var_decl(exp->array_index.array);
+		} break;
+
+		default:
+			return NULL;
+	}
+}
+
 static int get_struct_type_member_index(type_tag_t* tag, const char* name);
 // TODO: Add type names to error messages
 // NOTE: resolve_symbols before this
@@ -3268,9 +3312,22 @@ static void resolve_type_tags(script_t* script, void* vexp)
 						error_defer_e(exp->binx.lhs, "Invalid types in binary %s operation\n", g_token_names[exp->binx.op]);
 				}
 			}
-			else if(!are_assignment_types_valid(exp->binx.lhs, exp->binx.rhs))
-				error_defer_e(exp->binx.lhs, "Type of lhs in assignment operation does not match the type of rhs\n");
-		
+			else
+			{
+				// NOTE: If the type of the lhs is unknown, set it to the type of the rhs
+				// (since this is an assignment, after all)
+				if (exp->binx.lhs->tag->type == TAG_UNKNOWN)
+				{
+					exp->binx.lhs->tag = exp->binx.rhs->tag;
+
+					var_decl_t* decl = get_root_var_decl(exp->binx.lhs);
+					if(decl)
+						decl->tag = exp->binx.lhs->tag;
+				}
+				else if (!are_assignment_types_valid(exp->binx.lhs, exp->binx.rhs))
+					error_defer_e(exp->binx.lhs, "Type of lhs in assignment operation does not match the type of rhs\n");
+			}
+
 			switch(exp->binx.op)
 			{
 				case TOK_PLUS:
@@ -3342,7 +3399,7 @@ static void resolve_type_tags(script_t* script, void* vexp)
 		{
 			resolve_type_tags(script, exp->array_index.array);
 			resolve_type_tags(script, exp->array_index.index);
-			
+
 			if(!is_type_tag(exp->array_index.index->tag, TAG_NUMBER))
 				error_defer_e(exp->array_index.index, "Attempting to index array with non-number value\n");
 			
@@ -5587,6 +5644,7 @@ static void execute_cycle(script_t* script)
 
 			vec_init(&array, sizeof(script_value_t*));
 			vec_copy_region(&array, &script->stack, 0, script->stack.length - length, length);
+			script->stack.length -= length;
 			
 			script_push_premade_array(script, array);
 		} break;
