@@ -1530,6 +1530,17 @@ static int get_token(char reset)
 					case '\'': last = '\''; break;
 					case '"': last = '"'; break;
 					case '\\': last = '\\'; break;
+					case '\n':
+					case '\r':
+					{
+						while (isspace(last)) 
+						{
+							if (last == '\n') 
+								++g_line;
+
+							last = get_char();
+						}
+					} break;
 					default:
 						error_exit("invalid escape sequence char %c\n", last);
 						break;
@@ -3949,7 +3960,15 @@ static void ext_add_module(script_t* script, vector_t* args)
 
 static void ext_load_module(script_t* script, vector_t* args)
 {
+	script_value_t* name_val = script_get_arg(args, 0);
+	script_value_t* path_val = script_get_arg(args, 1);
 
+	const char* name = name_val->string.data;
+	const char* path = path_val->string.data;
+
+	script_load_parse_file(script, path, name);
+	script_push_number(script, script->modules.length - 1);
+	script_return_top(script);
 }
 
 static void compile_module(script_t* script, script_module_t* module);
@@ -4027,6 +4046,48 @@ static void ext_get_module_expr_list(script_t* script, vector_t* args)
 	}
 
 	script_push_premade_array(script, expr_list);
+	script_return_top(script);
+}
+
+// TODO: Have line info be passed into this function
+static void ext_parse_code(script_t* script, vector_t* args)
+{
+	EXT_CHECK_IF_CT("parse_code");
+	
+	script_module_t* module = vec_get(&script->modules, g_cur_module_index);
+	script_value_t* code_val = script_get_arg(args, 0);
+	
+	const char* code = code_val->string.data;
+
+	g_file = "parse_code";
+	g_code = code;
+	g_line = 1;
+
+	vector_t expr_list;
+	vec_init(&expr_list, sizeof(expr_t*));
+
+	parse_program(script, &expr_list);
+
+	vector_t expr_nat_list;
+	vec_init(&expr_nat_list, sizeof(script_value_t*));
+
+	for (int i = 0; i < expr_list.length; ++i)
+	{
+		expr_t* exp = vec_get_value(&expr_list, i, expr_t*);
+
+		script_value_t* val = new_value(script, VAL_NATIVE);
+		
+		val->nat.on_mark = NULL;
+		val->nat.on_delete = NULL;
+		
+		val->nat.value = exp;
+
+		vec_push_back(&expr_nat_list, &val);
+	}
+
+	vec_destroy(&expr_list);
+
+	script_push_premade_array(script, expr_nat_list);
 	script_return_top(script);
 }
 
@@ -4524,6 +4585,7 @@ static void ext_u8_buffer_to_string(script_t* script, vector_t* args)
 static void bind_default_externs(script_t* script)
 {
 	script_bind_extern(script, "add_module", ext_add_module);
+	script_bind_extern(script, "load_module", ext_load_module);
 	script_bind_extern(script, "compile_module", ext_compile_module);
 	script_bind_extern(script, "run_module", ext_run_module);
 	
@@ -4548,6 +4610,8 @@ static void bind_default_externs(script_t* script)
 	script_bind_extern(script, "declare_variable", ext_declare_variable);
 	script_bind_extern(script, "reference_variable", ext_reference_variable);
 	
+	script_bind_extern(script, "parse_code", ext_parse_code);
+
 	script_bind_extern(script, "make_num_expr", ext_make_num_expr);
 	script_bind_extern(script, "make_string_expr", ext_make_string_expr);
 	script_bind_extern(script, "make_var_expr", ext_make_var_expr);
@@ -5130,13 +5194,12 @@ static void push_call_record(script_t* script, script_function_t function, word 
 	vec_push_back(&script->call_records, &record);
 }
 
-static script_call_record_t pop_call_record(script_t* script)
+static void pop_call_record(script_t* script)
 {
 	script_call_record_t record;
 
-	vec_pop_back(&script->call_records, &record);
-
-	return record;
+	if(script->call_records.length > 0)
+		vec_pop_back(&script->call_records, &record);
 }
 
 static void pop_stack_frame(script_t* script)

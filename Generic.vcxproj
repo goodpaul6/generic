@@ -111,6 +111,8 @@
   </ItemGroup>
   <ItemGroup>
     <Text Include="basic.txt" />
+    <Text Include="eval.txt" />
+    <Text Include="meta.txt" />
     <Text Include="scratch.txt" />
     <Text Include="test.txt" />
   </ItemGroup>

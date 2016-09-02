@@ -55,5 +55,11 @@
     <Text Include="scratch.txt">
       <Filter>Resource Files</Filter>
     </Text>
+    <Text Include="eval.txt">
+      <Filter>Resource Files</Filter>
+    </Text>
+    <Text Include="meta.txt">
+      <Filter>Resource Files</Filter>
+    </Text>
   </ItemGroup>
 </Project>

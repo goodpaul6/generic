@@ -5,7 +5,29 @@ extern floor(number) : number
 extern char_to_number(char) : number
 extern number_to_string(number) : string
 
-var module_args : array-dynamic
+func is_alpha(c : char) : bool
+{
+	var n : number = char_to_number(c)
+	if n >= 'a' && n <= 'z' &&
+	   n >= 'A' && n <= 'Z'
+		return true
+	
+	return false
+}
+
+func is_digit(c : char) : bool
+{
+	var n : number = char_to_number(c)
+	
+	if n >= '0' && n <= '9' return true
+	
+	return false
+}
+
+func is_alnum(c : char) : bool
+{
+	return is_alpha(c) || is_digit(c)
+}
 
 func format_string(fmt : string, args : array-dynamic) : string
 {
