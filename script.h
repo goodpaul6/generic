@@ -278,6 +278,9 @@ void script_reset(script_t* script);
 
 void script_load_parse_file(script_t* script, const char* filename, const char* module_name);
 void script_parse_file(script_t* script, FILE* in, const char* local_path, const char* module_name);
+
+// NOTE: This function always creates a module 
+// and pushes onto script->modules
 void script_parse_code(script_t* script, const char* code, const char* local_path, const char* module_name);
 
 void script_disable_warning(script_warning_t warning, char disabled);

@@ -848,15 +848,10 @@ static void debug_script(script_t* script)
 			// NOTE: It literally creates a module just for this code to run
 			// This module automatically has access to the symbols of the other
 			// modules since they're already loaded up and running hopefully
-			int debug_module_index = add_module(script, "debug", "debug", cmdbuf);
+			script_parse_code(script, cmdbuf, "stdin", "debug");
 
-			script_module_t* module = vec_get(&script->modules, debug_module_index);
-	
-			g_file = module->local_path;
-			g_code = module->source_code;
-			g_line = 1;
-
-			parse_program(script, &module->expr_list);
+			// NOTE: script_parse_code pushes a module onto the end of the array
+			script_module_t* module = vec_get(&script->modules, script->modules.length - 1);
 
 			compile_module(script, module);
 
@@ -1142,9 +1137,9 @@ static type_tag_t* get_user_type_tag_from_name(script_t* script, const char* nam
 	for (int i = 0; i < script->modules.length; ++i)
 	{
 		script_module_t* module = vec_get(&script->modules, i);
-		var_decl_t* decl = map_get(&module->user_type_tags, name);
-		if (decl)
-			return decl->tag;
+		type_tag_t* tag = map_get(&module->user_type_tags, name);
+		if (tag)
+			return tag;
 	}
 
 	return NULL;
@@ -2450,7 +2445,7 @@ static expr_t* parse_directive(script_t* script)
 		apply_import_directive(script, g_lexeme);
 		get_next_token();
 	
-		return parse_factor(script);
+		return parse_expr(script);
 	}
 	else if(strcmp(g_lexeme, "#on_compile") == 0)
 	{
@@ -2463,7 +2458,7 @@ static expr_t* parse_directive(script_t* script)
 
 		// NOTE: The compile time block is not a part of the runtime
 		// program.
-		return parse_factor(script);
+		return parse_expr(script);
 	}
 	else
 		error_exit_p("Invalid directive '%s'\n", g_lexeme);
@@ -2506,7 +2501,7 @@ static expr_t* parse_factor(script_t* script)
 		case TOK_LEN: return parse_len(script);
 		case TOK_UNION:
 		case TOK_STRUCT: return parse_struct(script);
-		
+
 		default:
 			error_exit_p("Unexpected token '%s'\n", g_token_names[g_cur_tok]);
 	}
@@ -2709,6 +2704,8 @@ static expr_t* parse_bin_rhs(script_t* script, expr_t* lhs, int eprec)
 
 static expr_t* parse_expr(script_t* script)
 {
+	if (g_cur_tok == TOK_EOF) return NULL;
+
 	expr_t* e = parse_unary(script);
 	return parse_bin_rhs(script, e, 0);
 }
@@ -2721,6 +2718,7 @@ static void parse_program(script_t* script, vector_t* program)
 	while(g_cur_tok != TOK_EOF)
 	{
 		expr_t* e = parse_expr(script);
+		if (!e) break;
 		vec_push_back(program, &e);
 	}
 }
@@ -3291,34 +3289,37 @@ static void resolve_type_tags(script_t* script, void* vexp)
 		case EXP_DOT: case EXP_COLON:
 		{
 			resolve_type_tags(script, exp->dotx.value);
-			if(exp->dotx.value->tag->type != TAG_STRUCT) error_defer_e(exp->dotx.value, "Attempted to access members in non-struct type\n");
-			
-			char found = 0;
-			
-			type_tag_t* tag = exp->dotx.value->tag;
-			for(int i = 0; i < tag->ds.members.length; ++i)
+			if (exp->dotx.value->tag->type != TAG_STRUCT)
+				error_defer_e(exp->dotx.value, "Attempted to access members in non-struct type\n");
+			else
 			{
-				type_tag_member_t* mem = vec_get(&tag->ds.members, i);
-				if(strcmp(mem->name, exp->dotx.name) == 0)
+				char found = 0;
+
+				type_tag_t* tag = exp->dotx.value->tag;
+				for (int i = 0; i < tag->ds.members.length; ++i)
 				{
-					exp->tag = mem->type;
-					found = 1;
-					
-					if(exp->type == EXP_COLON) error_defer_e(exp, "Attempted to use ':' operator to access member value; use '.' instead\n");
-					break;
+					type_tag_member_t* mem = vec_get(&tag->ds.members, i);
+					if (strcmp(mem->name, exp->dotx.name) == 0)
+					{
+						exp->tag = mem->type;
+						found = 1;
+
+						if (exp->type == EXP_COLON) error_defer_e(exp, "Attempted to use ':' operator to access member value; use '.' instead\n");
+						break;
+					}
 				}
-			}
-			
-			if (!found)
-			{
-				func_decl_t* decl = get_struct_member_function(script, exp->dotx.value->tag->ds.name, exp->dotx.name);
-				if (decl) found = 1;
-				if (exp->type == EXP_DOT) error_defer_e(exp, "Attempted to use '.' operator to access member function; use ':' instead\n");
 
 				if (!found)
-					error_exit_e(exp, "Attempted to access non-existent member '%s' in struct %s\n", exp->dotx.name, tag->ds.name);
-				else
-					exp->tag = decl->tag;
+				{
+					func_decl_t* decl = get_struct_member_function(script, exp->dotx.value->tag->ds.name, exp->dotx.name);
+					if (decl) found = 1;
+					if (exp->type == EXP_DOT) error_defer_e(exp, "Attempted to use '.' operator to access member function; use ':' instead\n");
+
+					if (!found)
+						error_exit_e(exp, "Attempted to access non-existent member '%s' in struct %s\n", exp->dotx.name, tag->ds.name);
+					else
+						exp->tag = decl->tag;
+				}
 			}
 		} break;
 		
@@ -3498,7 +3499,8 @@ static void resolve_type_tags(script_t* script, void* vexp)
 					if(exp->callx.func->tag->type != TAG_DYNAMIC)
 					{
 						type_tag_t* expected_tag = vec_get_value(&exp->callx.func->tag->func.arg_types, i, type_tag_t*);
-						if(!compare_type_tags(arg->tag, expected_tag)) error_defer_e(arg, "Type of argument %i does not match expected type\n", i + 1);
+						if(!compare_type_tags(arg->tag, expected_tag)) 
+							error_defer_e(arg, "Type of argument %i does not match expected type\n", i + 1);
 					}
 				}
 			}
@@ -4126,8 +4128,270 @@ void script_bind_extern(script_t* script, const char* name, script_extern_t ext)
 
 // DEFAULT EXTERNS
 
-static void pop_call_record(script_t* script);
+static script_value_t* new_value(script_t* script, script_value_type_t type);
 
+static void push_value(script_t* script, script_value_t* val);
+
+// NOTE: Description format
+// b = char										-> bool
+// i = int										-> number
+// g = double									-> number
+// s = const char*/char*						-> string
+// c = char										-> char
+// cN = char[N]									-> string
+// p = void*									-> native
+// {any of the above} = struct					-> dynamic (a struct)
+// p{any of the above} = struct	*				-> dynamic (a struct but retrieved from a pointer in mem)
+// [any *one* of the above]	= vector_t of any	-> array-dynamic
+static script_value_t* unmarshal(script_t* script, const char** pdesc, char** pmem)
+{
+#define ALIGN(m, sz) (*m = (char*)((intptr_t)(*m) & ~((sz) - 1)))
+	
+	const char* desc = *pdesc;
+	
+	switch (*desc)
+	{
+		case 'b':
+		{
+			ALIGN(pmem, sizeof(char));
+				
+			script_value_t* val = new_value(script, VAL_BOOL);
+
+			val->boolean = (char)*(char*)(*pmem);
+
+			*pmem += sizeof(char);
+			*pdesc += 1;
+
+			return val;
+		} break;
+			
+		case 'i':
+		{
+			ALIGN(pmem, sizeof(int));
+
+			script_value_t* val = new_value(script, VAL_NUMBER);
+			val->number = (double)*(int*)(*pmem);
+
+			*pmem += sizeof(int);
+			*pdesc += 1;
+
+			return val;
+		} break;
+
+		case 'g':
+		{
+			ALIGN(pmem, sizeof(double));
+
+			script_value_t* val = new_value(script, VAL_NUMBER);
+			val->number = *(double*)(*pmem);
+
+			*pmem += sizeof(double);
+			*pdesc += 1;
+
+			return val;
+		} break;
+
+		case 's':
+		{
+			ALIGN(pmem, sizeof(const char*));
+
+			script_value_t* val = new_value(script, VAL_STRING);
+
+			const char* str = *(const char**)(*pmem);
+
+			val->string.length = strlen(str);
+			val->string.data = emalloc(val->string.length + 1);
+
+			strcpy(val->string.data, str);
+
+			*pmem += sizeof(const char*);
+			*pdesc += 1;
+
+			return val;
+		} break;
+
+		case 'c':
+		{
+			int n = 1;
+			int i = 1;
+
+			if (isdigit(desc[i]))
+			{
+				n = 0;
+				while (isdigit(desc[i]))
+				{
+					n = n * 10 + (desc[i] - '0');
+					++i;
+				}
+			}
+			*pdesc += i;
+
+			if (n == 1)
+			{
+				script_value_t* val = new_value(script, VAL_CHAR);
+				val->code = *(char*)(*pmem);
+
+				*pmem += 1;
+
+				return val;
+			}
+			else if (n > 1)
+			{
+				script_value_t* val = new_value(script, VAL_STRING);
+
+				// TODO: Maybe check for buffer overflow etc
+				const char* str = (const char*)(*pmem);
+
+				val->string.length = strlen(str);
+				val->string.data = emalloc(n);
+
+				strcpy(val->string.data, str);
+
+				*pmem += n;
+
+				return val;
+			}
+
+			assert(0);
+		} break;
+
+		case 'p':
+		{
+			if (desc[1] == '{')
+			{
+				ALIGN(pmem, sizeof(char*));
+
+				*pdesc += 1;
+				script_value_t* val = unmarshal(script, pdesc, *(char**)(*pmem));
+
+				*pmem += sizeof(char*);
+
+				return val;
+			}
+			else
+			{
+				ALIGN(pmem, sizeof(void*));
+
+				script_value_t* val = new_value(script, VAL_NATIVE);
+
+				val->nat.value = *(void**)(*pmem);
+				val->nat.on_mark = val->nat.on_delete = NULL;
+					
+				*pmem += sizeof(void*);
+				*pdesc += 1;
+
+				return val;
+			}
+		} break;
+
+		case '{':
+		case '[':
+		{
+			char is_array = desc[0] == '[';
+
+			int i = 1;
+			int dp = 0;
+			char nestedDesc[256];
+			
+			int bracket_count = 1;
+
+			while (bracket_count)
+			{
+				if (dp >= 255)
+				{
+					printf("'unmarshal' exceeded maximum description length.\n");
+					*pdesc += i + 1;
+					return new_value(script, VAL_NULL);
+				}
+				
+				if (desc[i] == '{' || desc[i] == '[')
+					++bracket_count;
+
+				if (desc[i] == '}' || desc[i] == ']')
+					--bracket_count;
+
+				if(bracket_count > 0)
+					nestedDesc[dp++] = desc[i++];
+			}
+			nestedDesc[dp] = '\0';
+
+			*pdesc += i + 1;
+
+			char* ndp = nestedDesc;
+
+			if (!is_array)
+			{
+				script_value_t* result = new_value(script, VAL_STRUCT_INSTANCE);
+				vec_init(&result->ds.members, sizeof(script_value_t*));
+
+				while(*ndp)
+				{
+					script_value_t* val = unmarshal(script, &ndp, pmem);
+					vec_push_back(&result->ds.members, &val);
+				}
+
+				return result;
+			}
+			else
+			{
+				vector_t* vec = *(vector_t**)pmem;
+
+				script_value_t* result = new_value(script, VAL_ARRAY);
+				vec_init(&result->array, sizeof(script_value_t*));
+
+				for(int i = 0; i < vec->length; ++i)
+				{
+					void* mem = vec_get(vec, i);
+
+					script_value_t* val = unmarshal(script, &ndp, &mem);
+					vec_push_back(&result->array, &val);
+
+					ndp = nestedDesc;
+				}
+
+				return result;
+			}
+		} break;
+	}
+#undef ALIGN
+
+	return NULL;
+}
+
+// NOTE: returns an array containing the new native pointer
+// (after reading) and the value
+static void ext_unmarshal(script_t* script, vector_t* args)
+{
+	script_value_t* desc_val = script_get_arg(args, 0);
+	script_value_t* mem_val = script_get_arg(args, 1);
+
+	const char* desc = desc_val->string.data;
+	char* mem = (char*)mem_val->nat.value;
+	
+	script_value_t* val = unmarshal(script, &desc, &mem);
+	if (!val)
+	{
+		script_push_null(script);
+		script_return_top(script);
+	}
+	else
+	{
+		vector_t result;
+		vec_init(&result, sizeof(script_value_t*));
+		
+		script_value_t* new_mem_val = new_value(script, VAL_NATIVE);
+		new_mem_val->nat.value = mem;
+		new_mem_val->nat.on_mark = new_mem_val->nat.on_delete = NULL;
+
+		vec_push_back(&result, &new_mem_val);
+		vec_push_back(&result, &val);
+
+		script_push_premade_array(script, result);
+		script_return_top(script);
+	}
+}
+
+static void pop_call_record(script_t* script);
 static void ext_debug_break(script_t* script, vector_t* args)
 {
 	// NOTE: HACK: pop call record off because we want to be
@@ -4141,7 +4405,11 @@ static void ext_debug_break(script_t* script, vector_t* args)
 }
 
 // NOTE: Fancy compile-time externs
+#if 1
 #define EXT_CHECK_IF_CT(name) if(g_cur_module_index < 0) error_exit_script(script, "Attempted to call compile-time function '" name "' at runtime\n");
+#else 
+#define EXT_CHECK_IF_CT(name)
+#endif
 
 static void ext_add_module(script_t* script, vector_t* args)
 {
@@ -4218,7 +4486,6 @@ static void ext_get_module_source_code(script_t* script, vector_t* args)
 	script_return_top(script);
 }
 
-static script_value_t* new_value(script_t* script, script_value_type_t type);
 static void ext_get_module_expr_list(script_t* script, vector_t* args)
 {
 	EXT_CHECK_IF_CT("get_module_expr_list");
@@ -4368,6 +4635,9 @@ static void ext_make_write_expr(script_t* script, vector_t* args)
 static void ext_create_bool_type(script_t* script, vector_t* args)
 {
 	EXT_CHECK_IF_CT("create_bool_type");
+
+	g_file = script->cur_file;
+	g_line = script->cur_line;
 	
 	script_push_native(script, create_type_tag(script, TAG_BOOL), NULL, NULL);
 	script_return_top(script);
@@ -4376,7 +4646,10 @@ static void ext_create_bool_type(script_t* script, vector_t* args)
 static void ext_create_char_type(script_t* script, vector_t* args)
 {
 	EXT_CHECK_IF_CT("create_char_type");
-	
+
+	g_file = script->cur_file;
+	g_line = script->cur_line;
+
 	script_push_native(script, create_type_tag(script, TAG_CHAR), NULL, NULL);
 	script_return_top(script);
 }
@@ -4384,7 +4657,10 @@ static void ext_create_char_type(script_t* script, vector_t* args)
 static void ext_create_number_type(script_t* script, vector_t* args)
 {
 	EXT_CHECK_IF_CT("create_number_type");
-	
+
+	g_file = script->cur_file;
+	g_line = script->cur_line;
+
 	script_push_native(script, create_type_tag(script, TAG_NUMBER), NULL, NULL);
 	script_return_top(script);
 }
@@ -4392,7 +4668,10 @@ static void ext_create_number_type(script_t* script, vector_t* args)
 static void ext_create_string_type(script_t* script, vector_t* args)
 {
 	EXT_CHECK_IF_CT("create_string_type");
-	
+
+	g_file = script->cur_file;
+	g_line = script->cur_line;
+
 	script_push_native(script, create_type_tag(script, TAG_STRING), NULL, NULL);
 	script_return_top(script);
 }
@@ -4400,7 +4679,10 @@ static void ext_create_string_type(script_t* script, vector_t* args)
 static void ext_create_array_type(script_t* script, vector_t* args)
 {
 	EXT_CHECK_IF_CT("create_array_type");
-	
+
+	g_file = script->cur_file;
+	g_line = script->cur_line;
+
 	script_value_t* contained_val = script_get_arg(args, 0);
 	type_tag_t* contained = contained_val->nat.value;
 	
@@ -4414,7 +4696,10 @@ static void ext_create_array_type(script_t* script, vector_t* args)
 static void ext_create_function_type(script_t* script, vector_t* args)
 {
 	EXT_CHECK_IF_CT("create_function_type");
-	
+
+	g_file = script->cur_file;
+	g_line = script->cur_line;
+
 	script_value_t* return_type_val = script_get_arg(args, 0);
 	script_value_t* arg_types_val = script_get_arg(args, 1);
 	
@@ -4435,7 +4720,10 @@ static void ext_create_function_type(script_t* script, vector_t* args)
 static void ext_create_native_type(script_t* script, vector_t* args)
 {
 	EXT_CHECK_IF_CT("create_native_type");
-		
+
+	g_file = script->cur_file;
+	g_line = script->cur_line;
+
 	script_push_native(script, create_type_tag(script, TAG_NATIVE), NULL, NULL);
 	script_return_top(script);
 }
@@ -4443,7 +4731,10 @@ static void ext_create_native_type(script_t* script, vector_t* args)
 static void ext_create_dynamic_type(script_t* script, vector_t* args)
 {
 	EXT_CHECK_IF_CT("create_dynamic_type");
-	
+
+	g_file = script->cur_file;
+	g_line = script->cur_line;
+
 	script_push_native(script, create_type_tag(script, TAG_DYNAMIC), NULL, NULL);
 	script_return_top(script);
 }
@@ -4451,8 +4742,34 @@ static void ext_create_dynamic_type(script_t* script, vector_t* args)
 static void ext_create_void_type(script_t* script, vector_t* args)
 {
 	EXT_CHECK_IF_CT("create_void_type");
-	
+
+	g_file = script->cur_file;
+	g_line = script->cur_line;
+
 	script_push_native(script, create_type_tag(script, TAG_VOID), NULL, NULL);
+	script_return_top(script);
+}
+
+static void ext_compare_types(script_t* script, vector_t* args)
+{
+	script_value_t* a_val = script_get_arg(args, 0);
+	script_value_t* b_val = script_get_arg(args, 1);
+	
+	type_tag_t* a = a_val->nat.value;
+	type_tag_t* b = b_val->nat.value;
+
+	script_push_bool(script, compare_type_tags(a, b));
+	script_return_top(script);
+}
+
+static void ext_get_array_type_contained_type(script_t* script, vector_t* args)
+{
+	EXT_CHECK_IF_CT("get_array_type_contained_type");
+
+	script_value_t* type_val = script_get_arg(args, 0);
+	type_tag_t* array_tag = type_val->nat.value;
+
+	script_push_native(script, array_tag->contained, NULL, NULL);
 	script_return_top(script);
 }
 
@@ -4535,6 +4852,53 @@ static void ext_reference_variable(script_t* script, vector_t* args)
 		error_exit_script(script, "Attempted to reference non-existent variable '%s'\n", name);
 	else
 		script_push_native(script, vdecl, NULL, NULL);
+	script_return_top(script);
+}
+
+static void ext_get_expr_type(script_t* script, vector_t* args)
+{
+	EXT_CHECK_IF_CT("get_expr_type");
+
+	script_value_t* exp_val = script_get_arg(args, 0);
+	expr_t* exp = exp_val->nat.value;
+
+	// TODO: make script_create_native etc
+	script_push_native(script, exp->tag, NULL, NULL);
+	script_return_top(script);
+}
+
+static void ext_get_var_expr_name(script_t* script, vector_t* args)
+{
+	EXT_CHECK_IF_CT("get_var_expr_name");
+
+	script_value_t* exp_val = script_get_arg(args, 0);
+	expr_t* exp = exp_val->nat.value;
+
+	script_push_cstr(script, exp->varx.name);
+	script_return_top(script);
+}
+
+static void ext_resolve_expr_symbols(script_t* script, vector_t* args)
+{
+	EXT_CHECK_IF_CT("resolve_expr_symbols");
+
+	script_value_t* exp_val = script_get_arg(args, 0);
+	resolve_symbols(script, exp_val->nat.value);
+
+	script_push_bool(script, !g_has_error);
+	g_has_error = 0;
+	script_return_top(script);
+}
+
+static void ext_resolve_expr_types(script_t* script, vector_t* args)
+{
+	EXT_CHECK_IF_CT("resolve_expr_types");
+
+	script_value_t* exp_val = script_get_arg(args, 0);
+	resolve_type_tags(script, exp_val->nat.value);
+	
+	script_push_bool(script, !g_has_error);
+	g_has_error = 0;
 	script_return_top(script);
 }
 
@@ -4831,6 +5195,8 @@ static void ext_u8_buffer_to_string(script_t* script, vector_t* args)
 
 static void bind_default_externs(script_t* script)
 {
+	script_bind_extern(script, "unmarshal", ext_unmarshal);
+
 	script_bind_extern(script, "debug_break", ext_debug_break);
 
 	script_bind_extern(script, "add_module", ext_add_module);
@@ -4853,6 +5219,10 @@ static void bind_default_externs(script_t* script)
 	script_bind_extern(script, "create_native_type", ext_create_native_type);
 	script_bind_extern(script, "create_dynamic_type", ext_create_dynamic_type);
 	script_bind_extern(script, "create_void_type", ext_create_void_type);
+
+	script_bind_extern(script, "compare_types", ext_compare_types);
+
+	script_bind_extern(script, "get_array_type_contained_type", ext_get_array_type_contained_type);
 	
 	script_bind_extern(script, "reference_function", ext_reference_func);
 	script_bind_extern(script, "get_func_decl_name", ext_get_func_decl_name);
@@ -4871,6 +5241,12 @@ static void bind_default_externs(script_t* script)
 	script_bind_extern(script, "make_array_index_expr", ext_make_array_index_expr);
 	
 	script_bind_extern(script, "get_func_expr_decl", ext_get_func_expr_decl);
+
+	script_bind_extern(script, "get_expr_type", ext_get_expr_type);
+	script_bind_extern(script, "get_var_expr_name", ext_get_var_expr_name);
+
+	script_bind_extern(script, "resolve_expr_symbols", ext_resolve_expr_symbols);
+	script_bind_extern(script, "resolve_expr_types", ext_resolve_expr_types);
 	
 	script_bind_extern(script, "add_expr_to_module", ext_add_expr_to_module);
 	script_bind_extern(script, "insert_expr_into_module", ext_insert_expr_into_module);

@@ -1,0 +1,61 @@
+#import "meta.txt"
+#import "basic.txt"
+
+extern 
+{
+	array_push(array-dynamic, dynamic) : void	
+	array_pop(array-dynamic) : dynamic
+}
+
+#on_compile {
+	write "compiling test.txt"
+
+	func exclaim(s : string) : void
+	{
+		write format_string("%s!", [s])
+	}
+
+	func pre_compile() : void
+	{
+		var module = get_current_module_index()
+	
+		// get all the expressions (flattened)
+		var expr_list = get_module_expr_list(module, true)
+	
+		for var i = 0, i < len expr_list, i = i + 1 {
+			var kind = get_expr_kind(expr_list[i])
+			
+			if kind == expr_kind_binary {	
+				if resolve_expr_symbols(expr_list[i]) {
+					resolve_expr_types(expr_list[i])
+				}
+			} else if kind == expr_kind_call {
+				if resolve_expr_symbols(expr_list[i]) {
+					resolve_expr_types(expr_list[i])
+				}
+
+				var func = expr_list[i + 1]
+				if get_expr_kind(func) == expr_kind_var {
+					if get_var_expr_name(func) == "array_push" {
+						
+					}
+				}
+
+				exclaim(format_string("found call at index %d", [i]))
+			} else if kind == expr_kind_func {
+				exclaim(format_string("found function at index %d", [i]))
+			}
+		}
+
+		add_expr_to_module(module, parse_code("run()")[0])
+	}
+
+	pre_compile()
+}
+
+func run() : void 
+{
+	var x = [] : number
+	array_push(x, "hello")
+	write x
+}

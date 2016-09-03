@@ -1,45 +1,65 @@
-#import "meta.txt"
-#import "basic.txt"
-
-extern 
+extern
 {
-	array_push(array-dynamic, dynamic) : void	
-	array_pop(array-dynamic) : dynamic
+	create_bool_type() : native
+	create_number_type() : native
+	create_function_type(native, array-native) : native
+	unmarshal(string, native) : array-dynamic
+	debug_break() : void
 }
 
-#on_compile func exclaim(s : string) : void
+struct context_t
 {
-	write format_string("%s!", [s])
+	line : number
+	file : string
+	scope : number
+	cur_func : native
 }
 
-#on_compile func pre_compile() : void
+struct type_tag_func_t
 {
-	var module = get_current_module_index()
-	
-	// get all the expressions (flattened)
-	var expr_list = get_module_expr_list(module, true)
-	
-	for var i = 0, i < len expr_list, i = i + 1 {
-		var kind = get_expr_kind(expr_list[i])
-		
-		if kind == expr_kind_call {
-			exclaim(format_string("found call at index %d", [i]))
-		}
-	}
-
-	add_expr_to_module(module, parse_code("run()")[0])
-
-	var f = parse_code("func get_n() : number { return 10 }")
-	add_expr_to_module(module, f[0])
+	arg_types : array-type_tag_t
+	return_type : type_tag_t
 }
 
-#on_compile pre_compile()
-
-func run() : void 
+struct type_tag_member_t
 {
-	var x = [] : number
-	array_push(x, "hello")
-	write x
+	name : string
+	index : number
+	type : type_tag_t
+	default_value : native
 }
 
-write get_n()
+struct type_tag_ds_t
+{
+	is_union : bool
+	name : string
+	size : number
+	using_tags : array-type_tag_t
+	members : array-type_tag_member_t
+}
+
+union type_tag_data_t
+{
+	func_tag : type_tag_func_t
+	contained : type_tag_t
+	ds : type_tag_ds_t
+}
+
+struct type_tag_t
+{
+	ctx : context_t
+	type : number
+	defined : bool
+	finalized : bool
+	data : type_tag_data_t
+}
+
+#on_compile
+{
+	var f = create_function_type(create_bool_type(), [create_number_type()])
+	var ur = unmarshal("{{isip}ibb}", f)
+	var tag : type_tag_t = ur[1]
+	tag.data = unmarshal("{[p{{isip}ibb}]{isip}ibb}", ur[0])[1]
+
+	write tag
+}

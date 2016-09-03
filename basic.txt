@@ -1,11 +1,16 @@
-extern create_u8_buffer() : native
-extern u8_buffer_push(native, number) : void
-extern u8_buffer_to_string(native) : string
-extern floor(number) : number
-extern char_to_number(char) : number
-extern number_to_string(number) : string
+extern
+{
+	create_u8_buffer() : native
+	u8_buffer_push(native, number) : void
+	u8_buffer_to_string(native) : string
+	floor(number) : number
+	char_to_number(char) : number
+	number_to_string(number) : string
+	
+	unmarshal_struct(string, native) : dynamic
 
-extern debug_break() : void
+	debug_break() : void
+}
 
 func is_alpha(c : char) : bool
 {

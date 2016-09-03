@@ -11,6 +11,10 @@ extern
 	create_native_type() : native
 	create_dynamic_type() : native
 	create_void_type() : native
+	
+	get_array_type_contained_type(native) : native
+
+	compare_types(native, native) : bool
 
 	get_current_module_index() : number
 	get_module_source_code(number) : string
@@ -36,6 +40,13 @@ extern
 	make_write_expr(native) : native
 	make_call_expr(native, array-native) : native
 	make_array_index_expr(native, native) : native
+
+	get_expr_type(native) : native
+
+	get_var_expr_name(native) : string
+
+	resolve_expr_symbols(native) : bool
+	resolve_expr_types(native) : bool
 
 	get_func_expr_decl(native) : native
 }
