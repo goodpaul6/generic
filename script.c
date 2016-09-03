@@ -4143,9 +4143,11 @@ static void push_value(script_t* script, script_value_t* val);
 // {any of the above} = struct					-> dynamic (a struct)
 // p{any of the above} = struct	*				-> dynamic (a struct but retrieved from a pointer in mem)
 // [any *one* of the above]	= vector_t of any	-> array-dynamic
+// & = void*									-> native (stores the current address in memory)
 static script_value_t* unmarshal(script_t* script, const char** pdesc, char** pmem)
 {
-#define ALIGN(m, sz) (*m = (char*)((intptr_t)(*m) & ~((sz) - 1)))
+#define ALIGN(m, type) (*m = (char*)((intptr_t)(*m) + (ALIGNOF(type) - 1) & -ALIGNOF(type)))
+#define ALIGNOF(type) ((size_t)&((struct { char c; type d; } *)0)->d)
 	
 	const char* desc = *pdesc;
 	
@@ -4153,7 +4155,7 @@ static script_value_t* unmarshal(script_t* script, const char** pdesc, char** pm
 	{
 		case 'b':
 		{
-			ALIGN(pmem, sizeof(char));
+			ALIGN(pmem, char);
 				
 			script_value_t* val = new_value(script, VAL_BOOL);
 
@@ -4167,7 +4169,7 @@ static script_value_t* unmarshal(script_t* script, const char** pdesc, char** pm
 			
 		case 'i':
 		{
-			ALIGN(pmem, sizeof(int));
+			ALIGN(pmem, int);
 
 			script_value_t* val = new_value(script, VAL_NUMBER);
 			val->number = (double)*(int*)(*pmem);
@@ -4180,7 +4182,7 @@ static script_value_t* unmarshal(script_t* script, const char** pdesc, char** pm
 
 		case 'g':
 		{
-			ALIGN(pmem, sizeof(double));
+			ALIGN(pmem, double);
 
 			script_value_t* val = new_value(script, VAL_NUMBER);
 			val->number = *(double*)(*pmem);
@@ -4193,21 +4195,27 @@ static script_value_t* unmarshal(script_t* script, const char** pdesc, char** pm
 
 		case 's':
 		{
-			ALIGN(pmem, sizeof(const char*));
-
-			script_value_t* val = new_value(script, VAL_STRING);
+			ALIGN(pmem, const char*);
 
 			const char* str = *(const char**)(*pmem);
 
-			val->string.length = strlen(str);
-			val->string.data = emalloc(val->string.length + 1);
-
-			strcpy(val->string.data, str);
-
-			*pmem += sizeof(const char*);
 			*pdesc += 1;
 
-			return val;
+			if (!str)
+				return new_value(script, VAL_NULL);
+			else
+			{
+				script_value_t* val = new_value(script, VAL_STRING);
+
+				val->string.length = strlen(str);
+				val->string.data = emalloc(val->string.length + 1);
+
+				strcpy(val->string.data, str);
+
+				*pmem += sizeof(const char*);
+
+				return val;
+			}
 		} break;
 
 		case 'c':
@@ -4259,18 +4267,23 @@ static script_value_t* unmarshal(script_t* script, const char** pdesc, char** pm
 		{
 			if (desc[1] == '{')
 			{
-				ALIGN(pmem, sizeof(char*));
+				ALIGN(pmem, char*);
 
 				*pdesc += 1;
-				script_value_t* val = unmarshal(script, pdesc, *(char**)(*pmem));
+				if (*pmem)
+				{
+					char* mem = *(char**)(*pmem);
+					script_value_t* val = unmarshal(script, pdesc, &mem);
+					return val;
+				}
 
 				*pmem += sizeof(char*);
 
-				return val;
+				return new_value(script, VAL_NULL);
 			}
 			else
 			{
-				ALIGN(pmem, sizeof(void*));
+				ALIGN(pmem, void*);
 
 				script_value_t* val = new_value(script, VAL_NATIVE);
 
@@ -4334,7 +4347,9 @@ static script_value_t* unmarshal(script_t* script, const char** pdesc, char** pm
 			}
 			else
 			{
-				vector_t* vec = *(vector_t**)pmem;
+				ALIGN(pmem, vector_t);
+
+				vector_t* vec = (vector_t*)(*pmem);
 
 				script_value_t* result = new_value(script, VAL_ARRAY);
 				vec_init(&result->array, sizeof(script_value_t*));
@@ -4352,14 +4367,26 @@ static script_value_t* unmarshal(script_t* script, const char** pdesc, char** pm
 				return result;
 			}
 		} break;
+
+		case '&':
+		{
+			script_value_t* val = new_value(script, VAL_NATIVE);
+
+			val->nat.value = *pmem;
+			val->nat.on_mark = val->nat.on_delete = NULL;
+
+			*pdesc += 1;
+
+			return val;
+		} break;
 	}
+
+#undef ALIGNOF
 #undef ALIGN
 
 	return NULL;
 }
 
-// NOTE: returns an array containing the new native pointer
-// (after reading) and the value
 static void ext_unmarshal(script_t* script, vector_t* args)
 {
 	script_value_t* desc_val = script_get_arg(args, 0);
@@ -4376,17 +4403,7 @@ static void ext_unmarshal(script_t* script, vector_t* args)
 	}
 	else
 	{
-		vector_t result;
-		vec_init(&result, sizeof(script_value_t*));
-		
-		script_value_t* new_mem_val = new_value(script, VAL_NATIVE);
-		new_mem_val->nat.value = mem;
-		new_mem_val->nat.on_mark = new_mem_val->nat.on_delete = NULL;
-
-		vec_push_back(&result, &new_mem_val);
-		vec_push_back(&result, &val);
-
-		script_push_premade_array(script, result);
+		push_value(script, val);
 		script_return_top(script);
 	}
 }

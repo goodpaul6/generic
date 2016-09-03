@@ -92,3 +92,67 @@ var expr_kind_extern_list	= 24
 var expr_kind_func			= 25
 
 var expr_kind_atom			= 26
+
+struct context_t
+{
+	line : number
+	file : string
+	scope : number
+	cur_func : native
+}
+
+struct type_tag_func_t
+{
+	arg_types : array-native
+	return_type : native
+}
+
+struct type_tag_member_t
+{
+	name : string
+	index : number
+	type : native
+	default_value : native
+}
+
+struct type_tag_ds_t
+{
+	is_union : bool
+	name : string
+	size : number
+	using_tags : array-native
+	members : array-type_tag_member_t
+}
+
+union type_tag_data_t
+{
+	func_tag : type_tag_func_t
+	contained : type_tag_t
+	ds : type_tag_ds_t
+}
+
+struct type_tag_t
+{
+	ctx : context_t
+	kind : number
+	defined : bool
+	finalized : bool
+	_data : native
+	data : type_tag_data_t
+}
+
+var type_tag_kind_void = 0
+var type_tag_kind_dynamic = 1
+var type_tag_kind_bool = 2
+var type_tag_kind_char = 3
+var type_tag_kind_number = 4
+var type_tag_kind_string = 5
+var type_tag_kind_func = 6
+var type_tag_kind_array = 7
+var type_tag_kind_native = 8
+
+func create_type_tag(kind : number) : void
+{
+	
+}
+

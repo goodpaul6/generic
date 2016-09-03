@@ -3,63 +3,17 @@ extern
 	create_bool_type() : native
 	create_number_type() : native
 	create_function_type(native, array-native) : native
-	unmarshal(string, native) : array-dynamic
+	unmarshal(string, native) : dynamic
 	debug_break() : void
-}
-
-struct context_t
-{
-	line : number
-	file : string
-	scope : number
-	cur_func : native
-}
-
-struct type_tag_func_t
-{
-	arg_types : array-type_tag_t
-	return_type : type_tag_t
-}
-
-struct type_tag_member_t
-{
-	name : string
-	index : number
-	type : type_tag_t
-	default_value : native
-}
-
-struct type_tag_ds_t
-{
-	is_union : bool
-	name : string
-	size : number
-	using_tags : array-type_tag_t
-	members : array-type_tag_member_t
-}
-
-union type_tag_data_t
-{
-	func_tag : type_tag_func_t
-	contained : type_tag_t
-	ds : type_tag_ds_t
-}
-
-struct type_tag_t
-{
-	ctx : context_t
-	type : number
-	defined : bool
-	finalized : bool
-	data : type_tag_data_t
 }
 
 #on_compile
 {
-	var f = create_function_type(create_bool_type(), [create_number_type()])
-	var ur = unmarshal("{{isip}ibb}", f)
-	var tag : type_tag_t = ur[1]
-	tag.data = unmarshal("{[p{{isip}ibb}]{isip}ibb}", ur[0])[1]
+	var type_tag_t_desc = "{{isip}ibb&}"
+	var type_tag_func_t_desc = "{[p]p}"
 
-	write tag
+	var f = create_function_type(create_bool_type(), [create_number_type()])
+
+	var tag : type_tag_t = unmarshal(type_tag_t_desc, f)
+	var data : type_tag_func_t = unmarshal(type_tag_func_t_desc, tag.data)
 }
