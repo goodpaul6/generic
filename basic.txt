@@ -5,6 +5,8 @@ extern floor(number) : number
 extern char_to_number(char) : number
 extern number_to_string(number) : string
 
+extern debug_break() : void
+
 func is_alpha(c : char) : bool
 {
 	var n : number = char_to_number(c)
@@ -39,11 +41,12 @@ func format_string(fmt : string, args : array-dynamic) : string
 	while i < len fmt
 	{
 		var c : char = fmt[i]
+		
 		if c == '%'
 		{
 			i = i + 1
 			c = fmt[i]
-			
+		
 			if c == 's'
 			{
 				var str : string = args[arg]
@@ -52,7 +55,9 @@ func format_string(fmt : string, args : array-dynamic) : string
 				
 				while str_index < length
 				{
-					u8_buffer_push(buf, char_to_number(str[str_index])) 
+					var cn = char_to_number(str[str_index])
+
+					u8_buffer_push(buf, cn)
 					str_index = str_index + 1
 				}
 			}

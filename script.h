@@ -10,7 +10,8 @@ extern "C" {
 #include "vector.h"
 #include "hashmap.h"
 
-#define SCRIPT_HEAP_BLOCK_SIZE (4096U / sizeof(script_value_t))
+#define SCRIPT_HEAP_BLOCK_SIZE		(4096U / sizeof(script_value_t))
+#define SCRIPT_DEBUG_CMD_BUF_SIZE	256
 
 typedef enum script_op
 {
@@ -176,19 +177,6 @@ typedef struct script_module
 	vector_t globals;				// NOTE: array of var_decl_t's
 } script_module_t;
 
-typedef struct script_debug_env
-{
-	vector_t breakpoints;
-	vector_t break_stack;
-} script_debug_env_t;
-
-typedef struct script_debug_breakpoint
-{
-	int pc; 			// NOTE: if this is known ofc (not of user-level use), -1 usually
-	char* file;			// NOTE: If this is null, then any file works
-	int line;			// NOTE: If this is -1, then no break occurs
-} script_debug_breakpoint_t;
-
 typedef struct script_heap_block
 {
 	struct script_heap_block* next;
@@ -212,6 +200,17 @@ typedef struct script_call_record
 	int line;
 } script_call_record_t;
 
+typedef struct
+{
+	char cmd[SCRIPT_DEBUG_CMD_BUF_SIZE];
+
+	// NOTE: file/line from which step was requested
+	const char* step_file;
+	int step_line;						
+
+	char step;
+} script_debug_env_t;
+
 // TODO: ATOMIC STACK
 typedef struct
 {
@@ -219,6 +218,9 @@ typedef struct
 	// for access in external function calls 
 	// set it like: script->userdata = my_userdata;
 	void* userdata;
+
+	// NOTE: For debug breaks and the like
+	script_debug_env_t debug_env;
 
 	// NOTE: when this is > 0, the script is cycled until
 	// this is 0
@@ -287,8 +289,6 @@ void script_run(script_t* script);
 void script_start(script_t* script);
 void script_execute_cycle(script_t* script);
 void script_stop(script_t* script);
-
-void script_debug(script_t* script, script_debug_env_t* env);
 
 char script_get_function_by_name(script_t* script, const char* name, script_function_t* function);
 void script_call_function(script_t* script, script_function_t function, int nargs);

@@ -7,7 +7,12 @@ extern
 	array_pop(array-dynamic) : dynamic
 }
 
-func get_calls() : void
+#on_compile func exclaim(s : string) : void
+{
+	write format_string("%s!", [s])
+}
+
+#on_compile func pre_compile() : void
 {
 	var module = get_current_module_index()
 	
@@ -18,16 +23,17 @@ func get_calls() : void
 		var kind = get_expr_kind(expr_list[i])
 		
 		if kind == expr_kind_call {
-			write format_string("found call at index %d", [i])
+			exclaim(format_string("found call at index %d", [i]))
 		}
 	}
-	
-	var to_add = parse_code("run()")
-	
-	add_expr_to_module(module, to_add[0])
+
+	add_expr_to_module(module, parse_code("run()")[0])
+
+	var f = parse_code("func get_n() : number { return 10 }")
+	add_expr_to_module(module, f[0])
 }
 
-#on_compile get_calls()
+#on_compile pre_compile()
 
 func run() : void 
 {
@@ -35,3 +41,5 @@ func run() : void
 	array_push(x, "hello")
 	write x
 }
+
+write get_n()

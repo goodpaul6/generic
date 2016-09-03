@@ -113,6 +113,13 @@ void vec_push_back(vector_t* vector, void* object)
 void vec_pop_back(vector_t* vector, void* into)
 {
 	if(vector->length == 0) error_exit("Attempted to perform vec_pop_back on empty vector");
+	
+	if (!into)
+	{
+		--vector->length;
+		return;
+	}
+
 	memcpy(into, &vector->data[(--vector->length) * vector->datum_size], vector->datum_size);
 }
 

@@ -676,16 +676,61 @@ static script_module_t* get_executing_module(script_t* script)
 
 static func_decl_t* reference_function(script_t* script, const char* function_name);
 
+static void print_current_script_line(script_t* script)
+{
+	script_module_t* mod = get_executing_module(script);
+
+	const char* code = mod->source_code;
+	int line = 1;
+	size_t line_len = 0;
+
+	while (*code)
+	{
+		line_len = strcspn(code, "\n\r");
+		if (line == script->cur_line)
+			break;
+
+		code += line_len;
+
+		while (isspace(*code))
+		{
+			if (*code == '\n') ++line;
+			++code;
+		}
+	}
+
+	if (line != script->cur_line)
+		printf("Current line not found...\n");
+	else
+		printf("(%s, %d): %.*s\n", mod->local_path, line, line_len, code);
+}
+
+static void execute_cycle(script_t* script);
+
+static void compile_module(script_t* script, script_module_t* module);
+static void destroy_module(void* p_module);
+static void parse_program(script_t* script, vector_t* expr_list);
 static void debug_script(script_t* script)
 {
 	printf("\n");
 
-	char cmdbuf[256];
+	if (script->pc >= 0)
+		print_current_script_line(script);
+	else
+		printf("Finished execution.\n");
+
+	char cmdbuf[SCRIPT_DEBUG_CMD_BUF_SIZE];
 
 	while (1)
 	{
-		fgets(cmdbuf, 256, stdin);
-		
+		fgets(cmdbuf, SCRIPT_DEBUG_CMD_BUF_SIZE, stdin);
+
+		// NOTE: empty command
+		if (cmdbuf[0] == '\n')
+			strcpy(cmdbuf, script->debug_env.cmd);
+		else
+			strcpy(script->debug_env.cmd, cmdbuf);
+			
 		// NOTE: Prints code in the vicinty of the error
 		if (strcmp(cmdbuf, "list\n") == 0)
 		{
@@ -694,7 +739,7 @@ static void debug_script(script_t* script)
 			{
 				printf("distance: ");
 				
-				fgets(cmdbuf, 256, stdin);
+				fgets(cmdbuf, SCRIPT_DEBUG_CMD_BUF_SIZE, stdin);
 				cmdbuf[strcspn(cmdbuf, "\n")] = '\0';
 
 				char* code = mod->source_code;
@@ -708,8 +753,16 @@ static void debug_script(script_t* script)
 					int dist = (int)labs(script->cur_line - line);
 					if (dist < minDist)
 					{
+						int n = printf("%d: ", line);
 						if (dist == 0)
-							printf("error ->");
+						{
+							// NOTE: prints --> or something at the line (covering the line number)
+							putchar('\r');
+							n -= 2;
+							while(n--) putchar('-');
+							putchar('>');
+						}
+
 						printf("%.*s\n", (int)(line_end - code), code);
 					}
 
@@ -733,7 +786,7 @@ static void debug_script(script_t* script)
 
 			printf("local name: ");
 			
-			fgets(cmdbuf, 256, stdin);
+			fgets(cmdbuf, SCRIPT_DEBUG_CMD_BUF_SIZE, stdin);
 			cmdbuf[strcspn(cmdbuf, "\n")] = '\0';
 
 			const char* name = vec_get_value(&script->function_names, record->function.index, char*);
@@ -779,6 +832,44 @@ static void debug_script(script_t* script)
 			
 			write_value(val, 1);
 			printf("\n");
+		}
+		else if (strcmp(cmdbuf, "step\n") == 0)
+		{
+			script->debug_env.step_file = script->cur_file;
+			script->debug_env.step_line = script->cur_line;
+			script->debug_env.step = 1;
+			break;
+		}
+		else if (strcmp(cmdbuf, "run_code\n") == 0)
+		{
+			printf("code: ");
+			fgets(cmdbuf, SCRIPT_DEBUG_CMD_BUF_SIZE, stdin);
+
+			// NOTE: It literally creates a module just for this code to run
+			// This module automatically has access to the symbols of the other
+			// modules since they're already loaded up and running hopefully
+			int debug_module_index = add_module(script, "debug", "debug", cmdbuf);
+
+			script_module_t* module = vec_get(&script->modules, debug_module_index);
+	
+			g_file = module->local_path;
+			g_code = module->source_code;
+			g_line = 1;
+
+			parse_program(script, &module->expr_list);
+
+			compile_module(script, module);
+
+			int pc = script->pc;
+			script->pc = module->start_pc;
+
+			while (script->pc >= 0 && script->pc < module->end_pc)
+				script_execute_cycle(script);
+
+			script->pc = pc;
+
+			destroy_module(module);
+			vec_pop_back(&script->modules, NULL);
 		}
 		else if (strcmp(cmdbuf, "stack\n") == 0)
 		{
@@ -1571,6 +1662,32 @@ static int get_token(char reset)
 	if(last == '\'')
 	{
 		last = get_char();
+		if (last == '\\')
+		{
+			last = get_char();
+			switch (last)
+			{
+				case 'n': last = '\n'; break;
+				case 't': last = '\t'; break;
+				case '0': last = '\0'; break;
+				case 'b': last = '\b'; break;
+				case 'r': last = '\r'; break;
+				case '\'': last = '\''; break;
+				case '"': last = '"'; break;
+				case '\\': last = '\\'; break;
+				case '\n':
+				case '\r':
+				{
+					while (isspace(last))
+					{
+						if (last == '\n')
+							++g_line;
+
+						last = get_char();
+					}
+				} break;
+			}
+		}
 		g_lexeme[0] = last;
 		g_lexeme[1] = '\0';
 		last = get_char();
@@ -3036,6 +3153,10 @@ static void resolve_symbols(script_t* script, expr_t* exp)
 		{
 			resolve_symbols(script, exp->len);
 		} break;
+
+		default:
+			assert(0);
+			break;
 	}
 }
 
@@ -4005,6 +4126,20 @@ void script_bind_extern(script_t* script, const char* name, script_extern_t ext)
 
 // DEFAULT EXTERNS
 
+static void pop_call_record(script_t* script);
+
+static void ext_debug_break(script_t* script, vector_t* args)
+{
+	// NOTE: HACK: pop call record off because we want to be
+	// in the scope of the enclosing function
+	script_call_record_t record = vec_get_value(&script->call_records, script->call_records.length - 1, script_call_record_t);
+	pop_call_record(script);
+
+	debug_script(script);
+	
+	vec_push_back(&script->call_records, &record);
+}
+
 // NOTE: Fancy compile-time externs
 #define EXT_CHECK_IF_CT(name) if(g_cur_module_index < 0) error_exit_script(script, "Attempted to call compile-time function '" name "' at runtime\n");
 
@@ -4046,7 +4181,6 @@ static void ext_compile_module(script_t* script, vector_t* args)
 	compile_module(script, module);
 }
 
-static void execute_cycle(script_t* script);
 static void ext_run_module(script_t* script, vector_t* args)
 {
 	script_value_t* idx_val = script_get_arg(args, 0);
@@ -4060,9 +4194,9 @@ static void ext_run_module(script_t* script, vector_t* args)
 	int pc = script->pc;
 	script->pc = module->start_pc;
 	
-	while(script->pc >= 0 && script->pc < module->end_pc)
-		execute_cycle(script);
-	
+	while (script->pc >= 0 && script->pc < module->end_pc)
+		script_execute_cycle(script);
+
 	script->pc = pc;
 }
 
@@ -4687,7 +4821,7 @@ static void ext_u8_buffer_to_string(script_t* script, vector_t* args)
 	vector_t* buf = nat->value;
 	unsigned char null_terminator = '\0';
 	vec_push_back(buf, &null_terminator);
-	script_string_t str = { buf->length, (char*)buf->data };
+	script_string_t str = { buf->length - 1, (char*)buf->data };
 	
 	script_push_string(script, str);
 	script_return_top(script);
@@ -4697,6 +4831,8 @@ static void ext_u8_buffer_to_string(script_t* script, vector_t* args)
 
 static void bind_default_externs(script_t* script)
 {
+	script_bind_extern(script, "debug_break", ext_debug_break);
+
 	script_bind_extern(script, "add_module", ext_add_module);
 	script_bind_extern(script, "load_module", ext_load_module);
 	script_bind_extern(script, "compile_module", ext_compile_module);
@@ -4779,10 +4915,18 @@ static void add_heap_block(script_t* script)
 	script->heap_head = block;
 }
 
+static void init_debug_env(script_debug_env_t* env)
+{
+	env->cmd[0] = '\0';
+	env->step = 0;
+}
+
 void script_init(script_t* script)
 {
 	g_line = 1;
 	g_file = "none";
+
+	init_debug_env(&script->debug_env);
 
 	script->atomic_depth = 0;
 	
@@ -6089,8 +6233,6 @@ static void compile_module(script_t* script, script_module_t* module)
 	
 	if(!module->compiled)
 	{
-		module->start_pc = script->code.length;
-
 		for (int pass = 0; pass <= 1; ++pass)
 		{
 			// NOTE: Skip first pass if there is no compile
@@ -6100,6 +6242,8 @@ static void compile_module(script_t* script, script_module_t* module)
 
 			check_all_tags_defined(script);
 			finalize_types(script);
+
+			int ct_start_pc = script->code.length;
 
 			// NOTE: We must compile all referenced modules so that this 
 			// module can access their code
@@ -6112,28 +6256,58 @@ static void compile_module(script_t* script, script_module_t* module)
 			}
 
 			// NOTE: Pass to resolve symbols and types
-			for (int expr_index = 0; expr_index < module->expr_list.length; ++expr_index)
+			if (pass == 1)
 			{
-				expr_t* node = vec_get_value(&module->expr_list, expr_index, expr_t*);
+				module->start_pc = script->code.length;
 
-				char prev_error = g_has_error;
-				resolve_symbols(script, node);
-				symbol_error = prev_error ? 0 : g_has_error;
-				if (!symbol_error) resolve_type_tags(script, node);
-			}
+				for (int expr_index = 0; expr_index < module->expr_list.length; ++expr_index)
+				{
+					expr_t* node = vec_get_value(&module->expr_list, expr_index, expr_t*);
 
-			if (g_has_error) error_exit("Errors in script code. Stopping...\n");
+					char prev_error = g_has_error;
+					resolve_symbols(script, node);
+					symbol_error = prev_error ? 0 : g_has_error;
+					if (!symbol_error) resolve_type_tags(script, node);
+				}
 
-			for (int expr_index = 0; expr_index < module->expr_list.length; ++expr_index)
-			{
-				expr_t* node = vec_get_value(&module->expr_list, expr_index, expr_t*);
-				compile_expr(script, node);
+				if (g_has_error) error_exit("Errors in script code. Stopping...\n");
+
+				for (int expr_index = 0; expr_index < module->expr_list.length; ++expr_index)
+				{
+					expr_t* node = vec_get_value(&module->expr_list, expr_index, expr_t*);
+					compile_expr(script, node);
+				}
+
+				module->end_pc = script->code.length;
 			}
 			
 			// NOTE: The first pass is the compile-time execution pass
+			
+			// TODO: VERY IMPORTANT: you cannot access the code in the current
+			// module in these compile-time blocks because this module is subject
+			// to change during the execution of this code
+			
+			// Option A: I could do a thing where I look at the code in these blocks and 
+			// see the symbols it references and compile the code associated
+			// with them but that's very complicated and the compiler isn't set up for 
+			// that
+			
+			// Option B: I have the compiler act differently during the first pass
+			// in that it ignores missing symbols and just carries on without compiling
+			// any code related to them (this could be pretty complex to do without errors
+			// since it may lead to stuff like call expressions being compiled but missing
+			// arguments etc; c compilers do this I believe)
+
+			// Option C: What I'm doing now, where you can't call code in this module
+			// It's just better if you create a file called "your_file_name_meta.gn"
+			// and then put all the compile time functions related to this module
+			// in that and you're golden (the compiler handles this just fine since
+			// that code will be in a separate module and thus free from edits by this
+			// code) OR you could even just label code #on_compile and it would 
+			// be available to the compile time code it's super easy fam
 			if (pass == 0)
 			{
-				int ct_code_start = script->code.length;
+				module->start_pc = script->code.length;
 
 				for (int i = 0; i < module->compile_time_blocks.length; ++i)
 				{
@@ -6156,24 +6330,25 @@ static void compile_module(script_t* script, script_module_t* module)
 				// NOTE: Must stop after all compile time code is executed
 				append_code(script, OP_HALT);
 
+				// NOTE: Temporary end_pc for debugging
+				module->end_pc = script->code.length;
+
 				// NOTE: setup script for compile-time execution
 				vec_clear(&script->stack);
 				allocate_globals(script);
 
 				printf("Executing compile-time code...\n");
 
-				script->pc = module->start_pc;
+				script->pc = ct_start_pc;
 				while (script->pc >= 0)
-					execute_cycle(script);
+					script_execute_cycle(script);
 
 				printf("Finished compile-time execution.\n");
 
 				// NOTE: Reset the script code so it doesn't include the compile time code
-				vec_resize(&script->code, ct_code_start, NULL);
+				vec_resize(&script->code, module->start_pc, NULL);
 			}
 		}
-
-		module->end_pc = script->code.length;
 		module->compiled = 1;
 	}
 }
@@ -6216,7 +6391,7 @@ void script_run(script_t* script)
 	
 	script->pc = 0;
 	while(script->pc >= 0)
-		execute_cycle(script);
+		script_execute_cycle(script);
 }
 
 void script_start(script_t* script)
@@ -6232,13 +6407,21 @@ void script_start(script_t* script)
 	// because otherwise globals remain uninitialized
 	// etc
 	while (script->pc >= 0)
-		execute_cycle(script);
+		script_execute_cycle(script);
 	
 	script->pc = 0;
 }
 
 void script_execute_cycle(script_t* script)
 {
+	if (script->debug_env.step && 
+		(script->cur_line != script->debug_env.step_line ||
+		 strcmp(script->cur_file, script->debug_env.step_file) != 0))
+	{
+		script->debug_env.step = 0;
+		debug_script(script);
+	}
+
 	execute_cycle(script);
 }
 
@@ -6254,191 +6437,6 @@ static void read_console_input(char* buf, size_t length)
 	char* new_line = strrchr(buf, '\n');
 	if(new_line)
 		*new_line = '\0';
-}
-
-static void output_current_line(script_t* script)
-{
-	script_module_t* module = NULL;
-	for(int i = 0; i < script->modules.length; ++i)
-	{
-		script_module_t* m = vec_get(&script->modules, i);
-		if(script->pc >= m->start_pc && script->pc < m->end_pc)
-		{
-			module = m;
-			break;
-		}
-	}
-	
-	if(module)
-	{
-		size_t length = strlen(module->source_code);
-		int line = 1;
-		int offset = -1;
-		for(int i = 0; i < length; ++i)
-		{
-			if(line == script->cur_line)
-			{
-				offset = i;
-				break;
-			}
-			if(module->source_code[i] == '\n') ++line;
-		}
-		
-		if(offset >= 0)
-		{
-			printf("(%s:%d): ", script->cur_file, script->cur_line);
-			char* source = &module->source_code[offset];
-			while(*source != '\n')
-			{
-				putc(*source, stdout);
-				++source;
-			}
-			putc('\n', stdout);
-		}
-		else
-			fprintf(stderr, "Unable to find line %d in source code\n", script->cur_line);
-	}
-	else
-		fprintf(stderr, "Unable to locate module for current pc %d\n", script->pc);
-}
-
-void script_debug(script_t* script, script_debug_env_t* env)
-{
-	vec_init(&env->breakpoints, sizeof(script_debug_breakpoint_t));
-	vec_init(&env->break_stack, sizeof(int));
-	
-	printf("Debugging script...\nFollowing modules loaded:\n");
-	for(int i = 0; i < script->modules.length; ++i)
-	{
-		script_module_t* module = vec_get(&script->modules, i);
-		printf("%s\n", module->local_path);
-	}
-	
-	char running = 1;
-	char script_running = 0;
-	
-	while(running)
-	{
-		char input[256];
-
-	on_break:
-		if(script_running)
-			output_current_line(script);
-	
-		read_console_input(input, 256);
-		
-		if(strcmp(input, "exit") == 0)
-			running = 0;
-		else if(strcmp(input, "run") == 0)
-		{
-			if(!script_running)
-				printf("Running...\n");
-			else
-				printf("Restarting...\n");
-			
-			script_running = 1;
-		
-			allocate_globals(script);
-			vec_clear(&script->stack);
-			script->pc = 0;
-		
-			while(script->pc >= 0)
-			{
-				int break_index = -1;
-				for(int i = 0; i < env->breakpoints.length; ++i)
-				{
-					script_debug_breakpoint_t* bp = vec_get(&env->breakpoints, i);
-					if((bp->line == script->cur_line && strcmp(bp->file, script->cur_file) == 0) ||
-						bp->pc == script->pc)
-					{
-						break_index = i;
-						break;
-					}
-				}
-				
-				if(break_index >= 0)
-				{
-					script_debug_breakpoint_t* bp = vec_get(&env->breakpoints, break_index);
-					printf("Hit breakpoint %d (%s:%d)\n", break_index, bp->file, bp->line);
-					vec_push_back(&env->break_stack, &script->pc);
-					goto on_break;
-				}
-				
-			on_continue:
-				execute_cycle(script);
-			}
-			
-			script_running = 0;
-		}
-		else if(strcmp(input, "continue") == 0)
-		{
-			if(env->break_stack.length > 0)
-			{
-				int pc;
-				vec_pop_back(&env->break_stack, &pc); 
-				script->pc = pc;
-				
-				goto on_continue;
-			}
-			else
-				fprintf(stderr, "Cannot continue; no breakpoint encountered\n");
-		}
-		else if(strcmp(input, "dis") == 0)
-			script_dissassemble(script, stdout);
-		else if(strcmp(input, "step") == 0)
-		{
-			if(script_running && script->pc >= 0 && script->pc < script->code.length)
-			{
-				int start_line = script->cur_line;
-				const char* start_file = script->cur_file;
-				while(script->cur_line == start_line && strcmp(script->cur_file, start_file))
-					execute_cycle(script);
-			}
-			else
-				fprintf(stderr, "Cannot step; script is not running\n");
-		}
-		else if(strcmp(input, "break_pc") == 0)
-		{
-			script_debug_breakpoint_t bp;
-			bp.pc = -1;
-			bp.file = NULL;
-			bp.line = -1;
-			
-			printf("pc: ");
-			read_console_input(input, 256);
-		
-			if(input[0])
-			{
-				bp.pc = strtol(input, NULL, 10);		
-				printf("Setting breakpoint at pc %d\n", bp.pc);
-				vec_push_back(&env->breakpoints, &bp);
-			}
-		}
-		else if(strcmp(input, "break") == 0)
-		{
-			script_debug_breakpoint_t bp;
-			bp.pc = -1;
-			bp.file = NULL;
-			bp.line = -1;
-			
-			printf("file: ");
-			read_console_input(input, 256);
-			
-			if(input[0])
-				bp.file = estrdup(input);
-			printf("line: ");
-			read_console_input(input, 256);
-			
-			if(input[0])
-				bp.line = strtol(input, NULL, 10);
-			
-			printf("Setting breakpoint at %s:%i\n", bp.file, bp.line);
-			vec_push_back(&env->breakpoints, &bp);
-		}
-	}
-	
-	vec_destroy(&env->breakpoints);
-	vec_destroy(&env->break_stack);
 }
 
 char script_get_function_by_name(script_t* script, const char* name, script_function_t* function)
@@ -6474,8 +6472,8 @@ void script_call_function(script_t* script, script_function_t function, int narg
 	push_stack_frame(script, (word)nargs);
 	script->pc = vec_get_value(&script->function_pcs, function.index, int);
 	
-	while(script->indir_depth > depth && script->pc >= 0)
-		execute_cycle(script);
+	while (script->indir_depth > depth && script->pc >= 0)
+		script_execute_cycle(script);
 }
 
 void script_goto_function(script_t * script, script_function_t function, int nargs)
